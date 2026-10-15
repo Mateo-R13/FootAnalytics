@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QHBoxLayout, QLabel, QMessageBox,
                                QPushButton, QTableView, QVBoxLayout, QWidget)
 
+from ..api.sofascore import ApiError
 from . import theme
 
 
@@ -94,6 +95,35 @@ class PageHeader(QWidget):
         lay.addLayout(texts, 1)
         self.actions = QHBoxLayout()
         lay.addLayout(self.actions)
+
+
+class Banner(QFrame):
+    """Bandeau d'alerte non bloquant, refermable ; un même message n'est affiché qu'une fois."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("Banner")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 8, 8, 8)
+        ic = QLabel()
+        ic.setPixmap(icon("fa5s.exclamation-triangle", "#fbbf24").pixmap(16, 16))
+        self.text = QLabel()
+        self.text.setWordWrap(True)
+        close = QPushButton(icon("fa5s.times", theme.INK2), "")
+        close.setFlat(True)
+        close.setCursor(Qt.PointingHandCursor)
+        close.setToolTip("Fermer")
+        close.clicked.connect(self.hide)
+        lay.addWidget(ic)
+        lay.addWidget(self.text, 1)
+        lay.addWidget(close)
+        self.hide()
+
+    def show_message(self, message: str):
+        if self.isVisible() and message in self.text.text():
+            return
+        self.text.setText(message)
+        self.show()
 
 
 def tool_button(text: str, icon_name: str, tooltip: str = "") -> QPushButton:
@@ -422,6 +452,11 @@ class _Task(QRunnable):
     def run(self):
         try:
             result = self.fn(self.signals.progress.emit)
+        except ApiError as exc:
+            self.signals.failed.emit(self.task_id, str(exc))
+        except (KeyError, TypeError, IndexError, AttributeError) as exc:
+            self.signals.failed.emit(self.task_id, "Les données reçues ont un format inattendu : Sofascore a peut-être "
+                                                   f"modifié son API ({type(exc).__name__} : {exc}).")
         except Exception as exc:
             self.signals.failed.emit(self.task_id, f"{type(exc).__name__} : {exc}")
         else:

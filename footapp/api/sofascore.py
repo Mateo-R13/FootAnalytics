@@ -112,12 +112,18 @@ class SofascoreClient:
                 try:
                     resp = self._session.get(self.BASE_URL + path, headers=self.HEADERS, timeout=20)
                 except Exception as exc:  # erreurs réseau curl
-                    raise ApiError(f"Erreur réseau : {exc}") from exc
+                    raise ApiError("Impossible de joindre Sofascore : vérifiez votre connexion internet.") from exc
                 finally:
                     self._last_request = time.time()
 
                 if resp.status_code == 200:
-                    return resp.content if raw else resp.json()
+                    if raw:
+                        return resp.content
+                    try:
+                        return resp.json()
+                    except ValueError as exc:
+                        raise ApiError("Sofascore a renvoyé une réponse illisible (page de contrôle anti-robots ?). "
+                                       "Réessayez dans quelques minutes.") from exc
                 if resp.status_code == 404:
                     return None
                 if resp.status_code == 403:
@@ -125,5 +131,10 @@ class SofascoreClient:
                     self._fp_index = (self._fp_index + 1) % len(self.FINGERPRINTS)
                     self._session = requests.Session(impersonate=self.FINGERPRINTS[self._fp_index])
                     continue
-                raise ApiError(f"HTTP {resp.status_code} sur {path}")
-            raise ApiError("Accès refusé par Sofascore (403). Réessayez plus tard.")
+                if resp.status_code == 429:
+                    raise ApiError("Trop de requêtes envoyées à Sofascore : patientez une minute avant de réessayer.")
+                if resp.status_code >= 500:
+                    raise ApiError(f"Sofascore est momentanément indisponible (erreur {resp.status_code}).")
+                raise ApiError(f"Réponse inattendue de Sofascore (HTTP {resp.status_code}).")
+            raise ApiError("Sofascore bloque temporairement l'accès (protection anti-robots). Réessayez dans "
+                           "quelques minutes ; les données déjà en cache restent consultables.")

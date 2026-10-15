@@ -1,6 +1,6 @@
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                               QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QProgressBar,
+                               QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from ..api.sofascore import SofascoreClient
 from ..config import APP_NAME, APP_VERSION, CACHE_DIR, COMPETITIONS
@@ -15,7 +15,7 @@ from .pages.profile import ProfilePage
 from .pages.standings import StandingsPage
 from .pages.teams import TeamsPage
 from .state import AppState, Context
-from .widgets import ImageStore, TaskRunner, icon, tool_button
+from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
 
 # Organisation de la navigation : (titre de section, [classes de pages])
 NAVIGATION = [
@@ -27,6 +27,13 @@ NAVIGATION = [
 NAV_LABELS = {"dashboard": "Tableau de bord", "standings": "Classement", "matches": "Matchs",
               "players": "Statistiques joueurs", "profile": "Fiche joueur", "compare": "Comparaison",
               "teams": "Équipes", "help": "Aide && glossaire"}
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class MainWindow(QMainWindow):
@@ -104,6 +111,8 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(20, 16, 20, 14)
         cl.setSpacing(16)
         cl.addWidget(topbar)
+        self.banner = Banner()
+        cl.addWidget(self.banner)
         cl.addWidget(self.stack, 1)
 
         central = QWidget()
@@ -129,7 +138,15 @@ class MainWindow(QMainWindow):
         self.state.open_player.connect(self._open_player)
         self.state.images.loaded.connect(self._refresh_comp_logo)
 
-        self.show_page("dashboard")
+        # préférences de la session précédente (compétition, saison, page)
+        self.settings = QSettings(APP_NAME, APP_NAME)
+        self._wanted_season = _as_int(self.settings.value("season_id"))
+        idx = self.competition.findData(_as_int(self.settings.value("competition")) or COMPETITIONS[0][1])
+        self.competition.blockSignals(True)
+        self.competition.setCurrentIndex(max(idx, 0))
+        self.competition.blockSignals(False)
+        page = str(self.settings.value("page") or "dashboard")
+        self.show_page(page if page in self.pages else "dashboard")
         self._load_seasons()
 
     def _brand(self):
@@ -153,6 +170,8 @@ class MainWindow(QMainWindow):
     def show_page(self, key: str):
         self.stack.setCurrentWidget(self.pages[key])
         self.nav_buttons[key].setChecked(True)
+        if hasattr(self, "settings"):
+            self.settings.setValue("page", key)
 
     def _open_player(self, pid: int):
         self.show_page("profile")
@@ -165,8 +184,7 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, message):
         self.statusBar().showMessage("Erreur : " + message)
-        QMessageBox.warning(self, "Erreur de chargement",
-                            f"{message}\n\nVérifiez votre connexion. Les données déjà en cache restent consultables.")
+        self.banner.show_message(message)
 
     def _refresh_comp_logo(self, *_):
         pix = self.state.logo("tournament", self.competition.currentData(), 30)
@@ -186,7 +204,10 @@ class MainWindow(QMainWindow):
             self.season.addItem(s["name"], s["id"])
         self.season.blockSignals(False)
         if seasons:
-            self.season.setCurrentIndex(0)
+            # saison mémorisée si elle appartient à cette compétition, sinon la plus récente
+            idx = self.season.findData(self._wanted_season) if self._wanted_season else -1
+            self._wanted_season = None
+            self.season.setCurrentIndex(max(idx, 0))
             self._on_season()
 
     def _on_season(self):
@@ -195,6 +216,9 @@ class MainWindow(QMainWindow):
             return
         ctx = Context(self.competition.currentData(), sid, self.competition.currentText(), self.season.currentText())
         self.context_label.setText(ctx.label)
+        self.settings.setValue("competition", ctx.ut)
+        self.settings.setValue("season_id", sid)
+        self.banner.hide()
         self.state.set_context(ctx)
 
     def _refresh(self):

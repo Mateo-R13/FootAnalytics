@@ -109,6 +109,8 @@ QMainWindow, #Content {{ background: {BG}; }}
 #TopBar {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
 #CompetitionName {{ font-size: 13pt; font-weight: 700; }}
 
+#Banner {{ background: rgba(251, 191, 36, 30); border: 1px solid rgba(251, 191, 36, 110); border-radius: 10px; }}
+
 /* --- en-tête de page --- */
 #PageTitle {{ font-size: 19pt; font-weight: 700; }}
 #PageSubtitle {{ color: {INK2}; font-size: 10pt; }}
