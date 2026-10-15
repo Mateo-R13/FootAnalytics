@@ -1,17 +1,23 @@
 from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QProgressBar,
                                QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from ..api.sofascore import SofascoreClient
-from ..config import APP_NAME, APP_VERSION, CACHE_DIR, COMPETITIONS
+from ..api.understat import UnderstatClient
+from ..config import APP_NAME, APP_VERSION, CACHE_DIR, COMPETITIONS, POSITIONS, resource_path
 from ..data import FootData
+from .. import updates
 from . import theme
+from .palette import CommandPalette
 from .pages.compare import ComparePage
 from .pages.dashboard import DashboardPage
 from .pages.help import HelpPage
 from .pages.matches import MatchesPage
 from .pages.players import PlayersPage
+from .pages.predictions import PredictionsPage
 from .pages.profile import ProfilePage
+from .pages.scouting import ScoutingPage
 from .pages.standings import StandingsPage
 from .pages.teams import TeamsPage
 from .state import AppState, Context
@@ -19,14 +25,15 @@ from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
 
 # Organisation de la navigation : (titre de section, [classes de pages])
 NAVIGATION = [
-    ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage]),
-    ("JOUEURS", [PlayersPage, ProfilePage, ComparePage]),
+    ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage, PredictionsPage]),
+    ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage]),
     ("ÉQUIPES", [TeamsPage]),
     ("", [HelpPage]),
 ]
 NAV_LABELS = {"dashboard": "Tableau de bord", "standings": "Classement", "matches": "Matchs",
-              "players": "Statistiques joueurs", "profile": "Fiche joueur", "compare": "Comparaison",
-              "teams": "Équipes", "help": "Aide && glossaire"}
+              "predictions": "Pronostics", "players": "Statistiques joueurs", "profile": "Fiche joueur",
+              "compare": "Comparaison", "scouting": "Recherche avancée", "teams": "Équipes",
+              "help": "Aide && paramètres"}
 
 
 def _as_int(value):
@@ -42,10 +49,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1500, 940)
         self.setMinimumSize(1200, 760)
+        self.setWindowIcon(QIcon(str(resource_path("assets/icon.png"))))
 
         client = SofascoreClient(CACHE_DIR)
         self.runner = TaskRunner(self)
-        self.state = AppState(FootData(client), self.runner, ImageStore(client, self), self)
+        data = FootData(client, UnderstatClient(CACHE_DIR))
+        self.state = AppState(data, self.runner, ImageStore(client, self), self)
 
         # --- pages
         self.stack = QStackedWidget()
@@ -96,7 +105,7 @@ class MainWindow(QMainWindow):
         refresh.setIcon(icon("fa5s.sync-alt", "#ffffff"))
         self.context_label = QLabel(objectName="CompetitionName")
         topbar = QFrame(objectName="TopBar")
-        tb = QHBoxLayout(topbar)
+        tb = self.topbar_layout = QHBoxLayout(topbar)
         tb.setContentsMargins(14, 8, 14, 8)
         tb.setSpacing(10)
         tb.addWidget(self.comp_logo)
@@ -136,7 +145,20 @@ class MainWindow(QMainWindow):
         self.season.currentIndexChanged.connect(self._on_season)
         refresh.clicked.connect(self._refresh)
         self.state.open_player.connect(self._open_player)
+        self.state.notice.connect(self.banner.show_message)
         self.state.images.loaded.connect(self._refresh_comp_logo)
+
+        # recherche globale
+        self.palette = CommandPalette(self, self._palette_entries, self._palette_choose)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.palette.popup)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.palette.popup)
+        search = tool_button("Rechercher  Ctrl+K", "fa5s.search", "Recherche globale : joueurs, équipes, pages")
+        search.clicked.connect(self.palette.popup)
+        self.topbar_layout.insertWidget(2, search)
+
+        # nouvelle version publiée sur GitHub ?
+        self.runner.run("updates", lambda progress: updates.latest_release(), self._on_release,
+                        on_error=lambda message: None)
 
         # préférences de la session précédente (compétition, saison, page)
         self.settings = QSettings(APP_NAME, APP_NAME)
@@ -174,8 +196,37 @@ class MainWindow(QMainWindow):
             self.settings.setValue("page", key)
 
     def _open_player(self, pid: int):
+        players = self.state.players
+        if players.empty or players[players["player_id"] == pid].empty:
+            self.banner.show_message("Ce joueur ne fait pas partie de la compétition sélectionnée : choisissez sa "
+                                     "compétition en haut de la fenêtre pour ouvrir sa fiche.")
+            return
         self.show_page("profile")
         self.pages["profile"].show_player(pid)
+
+    def _palette_entries(self):
+        entries = [("page", NAV_LABELS[k].replace("&&", "&"), "page", k) for k in self.pages]
+        if not self.state.standings.empty:
+            entries += [("team", r["Équipe"], "équipe", r["Équipe"]) for _, r in self.state.standings.iterrows()]
+        players = self.state.players
+        if not players.empty:
+            for r in players.sort_values("minutesPlayed", ascending=False).itertuples():
+                entries.append(("player", r.player, f"{r.team} · {POSITIONS[r.pos]}", int(r.player_id)))
+        return entries
+
+    def _palette_choose(self, kind, value):
+        if kind == "page":
+            self.show_page(value)
+        elif kind == "player":
+            self._open_player(value)
+        elif kind == "team":
+            self.show_page("teams")
+            self.pages["teams"].show_team(value)
+
+    def _on_release(self, release):
+        if release and updates.is_newer(release["version"], APP_VERSION):
+            self.banner.show_message(f"Nouvelle version {release['version']} disponible : "
+                                     f"<a href='{release['url']}'>télécharger sur GitHub</a>")
 
     def _on_busy(self, n):
         self.busy.setVisible(n > 0)

@@ -111,9 +111,19 @@ class DashboardPage(Page):
             grid.addWidget(card, i // 4, i % 4)
         lay.addLayout(grid)
 
+        self.watch_table = DataTable()
+        self.watch_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
+        self.watch_table.row_activated.connect(lambda r: state.open_player.emit(int(r["player_id"])))
+        self.watch_table.setMinimumHeight(150)
+        self.watch_card = table_card(self.watch_table, "Joueurs suivis",
+                                     "ajoutez des joueurs avec ★ Suivre sur leur fiche · double-clic : fiche")
+        lay.addWidget(self.watch_card)
+        state.watchlist_changed.connect(self._update_watchlist)
+
         self.table = DataTable()
         self.table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
-        state.images.loaded.connect(lambda *_: self.table.model_.refresh_icons())
+        state.images.loaded.connect(lambda *_: (self.table.model_.refresh_icons(),
+                                                self.watch_table.model_.refresh_icons()))
         self.chart = ChartWidget()
         bottom = QSplitter(Qt.Horizontal)
         bottom.addWidget(table_card(self.table, "Classement", "top 8"))
@@ -131,6 +141,7 @@ class DashboardPage(Page):
         state.context_changed.connect(self._on_context)
         state.standings_changed.connect(self._on_standings)
         state.players_changed.connect(self._on_players)
+        self._update_watchlist()
 
     def _on_context(self, ctx):
         for k in (self.k_matches, self.k_goals, self.k_xg, self.k_players, self.k_leader):
@@ -158,6 +169,7 @@ class DashboardPage(Page):
             self.chart.message("Pas de statistiques joueurs pour cette compétition")
             return
         self.k_players.set(str(len(df)), f"{int((df['minutesPlayed'] >= 270).sum())} avec ≥ 270 min")
+        self._update_watchlist()
         for card in self.leaders:
             card.update_data(df)
         self._update_xg()
@@ -172,6 +184,27 @@ class DashboardPage(Page):
         ax.plot([0, lim], [0, lim], color=theme.MUTED, lw=1, ls=":")
         ax.text(lim, lim, " buts = xG", fontsize=8, color=theme.MUTED, va="bottom", ha="right")
         self.chart.draw()
+
+    def _update_watchlist(self):
+        wl, df = self.state.watchlist(), self.state.players
+        if not wl:
+            self.watch_card.hide()
+            return
+        self.watch_card.show()
+        rows = []
+        for pid, info in wl.items():
+            match = df[df["player_id"] == pid] if not df.empty else df
+            if match.empty:
+                rows.append({"Joueur": info["name"], "Équipe": info["team"], "Compétition": "autre compétition",
+                             "player_id": pid, "team_id": None})
+                continue
+            r = match.iloc[0]
+            per = lambda k: round(r[k] / r["minutesPlayed"] * 90, 2) if r["minutesPlayed"] and pd.notna(r[k]) else None
+            rows.append({"Joueur": r["player"], "Équipe": r["team"], "Compétition": self.ctx.label,
+                         "Matchs": r["appearances"], "Minutes": r["minutesPlayed"], "Buts": r["goals"],
+                         "Passes déc.": r["assists"], "xG /90": per("expectedGoals"), "xA /90": per("expectedAssists"),
+                         "Note moy.": r["rating"], "player_id": pid, "team_id": r["team_id"]})
+        self.watch_table.set_dataframe(pd.DataFrame(rows))
 
     def _update_xg(self):
         players, standings = self.state.players, self.state.standings

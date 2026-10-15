@@ -17,8 +17,15 @@ from ..api.sofascore import ApiError
 from . import theme
 
 
-def icon(name: str, color: str = theme.INK2):
-    return qta.icon(name, color=color)
+def icon(name: str, color: str | None = None):
+    return qta.icon(name, color=color or theme.INK2)
+
+
+def signed_color(v):
+    """Couleur de texte pour une valeur signée (vert si positive, rouge si négative)."""
+    if v is None or pd.isna(v) or v == 0:
+        return None
+    return theme.GOOD_TEXT if v > 0 else theme.BAD_TEXT
 
 
 # --- conteneurs ------------------------------------------------------------
@@ -109,6 +116,7 @@ class Banner(QFrame):
         ic.setPixmap(icon("fa5s.exclamation-triangle", "#fbbf24").pixmap(16, 16))
         self.text = QLabel()
         self.text.setWordWrap(True)
+        self.text.setOpenExternalLinks(True)
         close = QPushButton(icon("fa5s.times", theme.INK2), "")
         close.setFlat(True)
         close.setCursor(Qt.PointingHandCursor)
@@ -217,7 +225,18 @@ class ChartWidget(QWidget):
         layout.setSpacing(0)
         if toolbar:
             bar = NavigationToolbar2QT(self.canvas, self)
-            bar.setIconSize(QSize(16, 16))
+            bar.setIconSize(QSize(15, 15))
+            # icônes de l'application (lisibles en thème clair comme sombre)
+            icons = {"Home": "fa5s.home", "Back": "fa5s.arrow-left", "Forward": "fa5s.arrow-right",
+                     "Pan": "fa5s.arrows-alt", "Zoom": "fa5s.search-plus", "Subplots": "fa5s.sliders-h",
+                     "Customize": "fa5s.pen", "Save": "fa5s.save"}
+            tips = {"Home": "Vue d'origine", "Back": "Vue précédente", "Forward": "Vue suivante",
+                    "Pan": "Déplacer", "Zoom": "Zoomer sur une zone", "Subplots": "Marges",
+                    "Customize": "Personnaliser les axes", "Save": "Enregistrer l'image (PNG, SVG, PDF)"}
+            for action in bar.actions():
+                if action.text() in icons:
+                    action.setIcon(icon(icons[action.text()]))
+                    action.setToolTip(tips[action.text()])
             bar.setStyleSheet(f"QToolBar {{ background: transparent; border: none; }}"
                               f"QToolButton {{ border-radius: 6px; padding: 3px; }}"
                               f"QToolButton:hover {{ background: {theme.CONTROL}; }}"
@@ -451,16 +470,19 @@ class _Task(QRunnable):
 
     def run(self):
         try:
-            result = self.fn(self.signals.progress.emit)
-        except ApiError as exc:
-            self.signals.failed.emit(self.task_id, str(exc))
-        except (KeyError, TypeError, IndexError, AttributeError) as exc:
-            self.signals.failed.emit(self.task_id, "Les données reçues ont un format inattendu : Sofascore a peut-être "
-                                                   f"modifié son API ({type(exc).__name__} : {exc}).")
-        except Exception as exc:
-            self.signals.failed.emit(self.task_id, f"{type(exc).__name__} : {exc}")
-        else:
-            self.signals.done.emit(self.task_id, result)
+            try:
+                result = self.fn(self.signals.progress.emit)
+            except ApiError as exc:
+                self.signals.failed.emit(self.task_id, str(exc))
+            except (KeyError, TypeError, IndexError, AttributeError) as exc:
+                self.signals.failed.emit(self.task_id, "Les données reçues ont un format inattendu : Sofascore a "
+                                                       f"peut-être modifié son API ({type(exc).__name__} : {exc}).")
+            except Exception as exc:
+                self.signals.failed.emit(self.task_id, f"{type(exc).__name__} : {exc}")
+            else:
+                self.signals.done.emit(self.task_id, result)
+        except RuntimeError:
+            pass  # application fermée pendant le chargement : plus personne à prévenir
 
 
 class TaskRunner(QObject):

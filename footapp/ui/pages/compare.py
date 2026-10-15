@@ -22,9 +22,14 @@ class ComparePage(Page):
         self.p1 = player_combo()
         self.p2 = player_combo()
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=270, suffix=" min")
+        self.scope = QComboBox()
+        self.scope.addItem("Compétition actuelle", "league")
+        self.scope.addItem("5 grands championnats", "big5")
+        self.scope.setToolTip("Référentiel des joueurs comparables (centiles, nuage de points)")
         top = Card(margins=10)
         row = QHBoxLayout()
-        for w in (QLabel("Joueur 1"), self.p1, QLabel("Joueur 2"), self.p2, QLabel("Échantillon ≥"), self.min_minutes):
+        for w in (QLabel("Joueur 1"), self.p1, QLabel("Joueur 2"), self.p2, QLabel("Échantillon ≥"), self.min_minutes,
+                  self.scope):
             row.addWidget(w)
         row.addStretch()
         top.body.addLayout(row)
@@ -65,8 +70,21 @@ class ComparePage(Page):
             box.currentIndexChanged.connect(self.refresh_scatter)
         self.sc_per90.toggled.connect(self.refresh_scatter)
         self.min_minutes.valueChanged.connect(self.refresh)
+        self.scope.currentIndexChanged.connect(self._on_scope)
         state.context_changed.connect(self._on_context)
-        state.players_changed.connect(self._on_players)
+        state.players_changed.connect(lambda df: self._on_players(df) if self.scope.currentData() == "league" else None)
+        state.big5_changed.connect(lambda df: self._on_players(df) if self.scope.currentData() == "big5" else None)
+
+    def _pool(self) -> pd.DataFrame:
+        pool = self.state.players_pool(self.scope.currentData())
+        return pool if pool is not None else pd.DataFrame()
+
+    def _on_scope(self):
+        if self.scope.currentData() == "big5" and self.state.big5 is None:
+            self.radar_chart.message("Chargement des 5 grands championnats… (environ 40 requêtes la première fois)")
+            self.state.request_big5()
+        else:
+            self._on_players(self._pool())
 
     def _on_context(self, ctx):
         self.radar_chart.message("Chargement…")
@@ -90,11 +108,14 @@ class ComparePage(Page):
         self.refresh()
 
     def _row(self, box):
-        pid, df = box.currentData(), self.state.players
+        pid, df = box.currentData(), self._pool()
         if pid is None or df.empty:
             return None
         rows = df[df["player_id"] == pid]
         return rows.iloc[0] if not rows.empty else None
+
+    def _scope_label(self):
+        return "5 grands championnats" if self.scope.currentData() == "big5" else self.ctx.label
 
     def refresh(self):
         self.refresh_radar()
@@ -105,7 +126,7 @@ class ComparePage(Page):
         if p1 is None:
             self.radar_table.set_dataframe(pd.DataFrame())
             return self.radar_chart.message("Sélectionnez un joueur")
-        df = self.state.players
+        df = self._pool()
         pos = p1["pos"]
         keys = POSITION_TEMPLATES[pos]
         pool = df[(df["pos"] == pos) & (df["minutesPlayed"] >= self.min_minutes.value())]
@@ -126,12 +147,12 @@ class ComparePage(Page):
             table[f"{p['player']} · centile"] = [round(c) for c in cent]
         note = "" if p2 is None or p2["pos"] == pos else " · attention : joueur 2 évalué hors de son poste"
         charts.radar(self.radar_chart, params, series, "Profil comparé",
-                     f"Centiles vs {len(pool)} joueurs au poste {POSITIONS[pos].lower()} · {self.ctx.label}"
+                     f"Centiles vs {len(pool)} joueurs au poste {POSITIONS[pos].lower()} · {self._scope_label()}"
                      f" · ≥ {self.min_minutes.value()} min · par 90 min (hors %){note}")
         self.radar_table.set_dataframe(pd.DataFrame(table))
 
     def refresh_scatter(self):
-        df = self.state.players
+        df = self._pool()
         if df.empty:
             return self.scatter_chart.message("Aucune donnée")
         x, y = self.x_metric.currentData(), self.y_metric.currentData()
@@ -148,5 +169,5 @@ class ComparePage(Page):
         suffix = " (par 90 min)" if self.sc_per90.isChecked() else ""
         charts.scatter(self.scatter_chart, plot, xl, yl, "player", f"{xl} vs {yl}{suffix}",
                        highlight=highlight, extra_col="team",
-                       subtitle=f"{len(plot)} joueurs · {self.ctx.label} · joueurs sélectionnés en bleu · "
+                       subtitle=f"{len(plot)} joueurs · {self._scope_label()} · joueurs sélectionnés en bleu · "
                                 "pointillés : moyennes")

@@ -1,11 +1,13 @@
+from datetime import datetime
+
 import pandas as pd
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QSplitter, QTabWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+                               QMessageBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from ...config import LINEUP_BASE, LINEUP_GROUPS, MATCH_PERIODS, MATCH_STAT_GROUPS, MATCH_STAT_LABELS, MATCH_STATUS
-from .. import charts, theme
+from .. import charts, report, theme
 from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card, tool_button
 from . import Page
 
@@ -28,6 +30,12 @@ class MatchesPage(Page):
     def __init__(self, state):
         super().__init__(state)
         self.bundle = None
+        self.live_timer = QTimer(self)
+        self.live_timer.setInterval(60_000)
+        self.live_timer.timeout.connect(self._live_tick)
+        pdf = tool_button("Exporter PDF", "fa5s.file-pdf", "Rapport du match en PDF")
+        pdf.clicked.connect(self.export_pdf)
+        self.header.actions.addWidget(pdf)
 
         # --- liste des matchs
         self.round_box = QComboBox()
@@ -203,15 +211,12 @@ class MatchesPage(Page):
 
     # --- match -----------------------------------------------------------------
     def _load_match(self, item, _previous=None):
+        self.live_timer.stop()
         if item is None:
             return
         e = item.data(Qt.UserRole)
         played = e["status"] in ("finished", "inprogress")
-        self.home_name.setText(e["home"])
-        self.away_name.setText(e["away"])
-        self.score.setText(f"{e['home_score']} - {e['away_score']}" if played else "vs")
-        status = MATCH_STATUS.get(e["status_label"], e["status_label"])
-        self.info.setText(f"{self.ctx.label} · {e['date']:%d/%m/%Y %H:%M} · {status}")
+        self._show_header(e)
         self.bundle = {"event": e}
         self._refresh_logos()
         if not played:
@@ -225,12 +230,37 @@ class MatchesPage(Page):
             c.message("Chargement du match…")
         self.state.runner.run("match", lambda progress: self.state.data.match_bundle(e), self._on_match)
 
+    def _show_header(self, e, extra=""):
+        played = e["status"] in ("finished", "inprogress")
+        self.home_name.setText(e["home"])
+        self.away_name.setText(e["away"])
+        self.score.setText(f"{e['home_score']} - {e['away_score']}" if played else "vs")
+        status = MATCH_STATUS.get(e["status_label"], e["status_label"])
+        self.info.setText(f"{self.ctx.label} · {e['date']:%d/%m/%Y %H:%M} · {status}{extra}")
+
+    def _live_tick(self):
+        """Mode direct : score et données du match rechargés toutes les 60 s."""
+        if not self.bundle or not self.isVisible():
+            return
+        e = self.bundle["event"]
+
+        def job(progress):
+            fresh = self.state.data.refresh_event(e)
+            return self.state.data.match_bundle(fresh)
+
+        self.state.runner.run("match", job, self._on_match)
+
     def _on_match(self, bundle):
         self.bundle = bundle
         e = bundle["event"]
         f = bundle["formations"]
-        if f.get("home") or f.get("away"):
-            self.info.setText(self.info.text() + f" · systèmes : {f.get('home') or '?'} / {f.get('away') or '?'}")
+        extra = f" · systèmes : {f.get('home') or '?'} / {f.get('away') or '?'}" if f.get("home") or f.get("away") else ""
+        if e["status"] == "inprogress":
+            extra += f"   ● EN DIRECT · actualisé à {datetime.now():%H:%M:%S}"
+            self.live_timer.start()
+        else:
+            self.live_timer.stop()
+        self._show_header(e, extra)
         self._show_stats()
         charts.shotmap(self.shots_chart, bundle["shots"], bundle["momentum"], e["home"], e["away"])
         charts.cumulative_xg(self.xg_chart, bundle["shots"], e["home"], e["away"])
@@ -244,6 +274,36 @@ class MatchesPage(Page):
         self.lineup_team.blockSignals(False)
         self._show_lineups()
         self._refresh_logos()
+
+    def export_pdf(self):
+        if not self.bundle or "stats" not in self.bundle:
+            return
+        e = self.bundle["event"]
+        path, _ = QFileDialog.getSaveFileName(self, "Exporter le match", f"match_{e['home']}-{e['away']}.pdf",
+                                              "PDF (*.pdf)")
+        if not path:
+            return
+        shots = self.bundle["shots"]
+        xg = lambda home: f"{shots.loc[shots['is_home'] == home, 'xg'].sum():.2f}" if not shots.empty else "-"
+        kpis = [(e["home"], str(e["home_score"])), (e["away"], str(e["away_score"])),
+                (f"xG {e['home']}", xg(True)), (f"xG {e['away']}", xg(False))]
+        f = self.bundle["formations"]
+        facts = [("Compétition", self.ctx.label), ("Date", f"{e['date']:%d/%m/%Y %H:%M}"),
+                 ("Systèmes", f"{f.get('home') or '?'} / {f.get('away') or '?'}")]
+        figures = [report.cover(f"{e['home']} {e['home_score']} - {e['away_score']} {e['away']}",
+                                MATCH_STATUS.get(e["status_label"], e["status_label"]), facts, kpis)]
+        figures += [c.figure for c in (self.stats_chart, self.shots_chart, self.xg_chart, self.positions_chart)
+                    if c.figure.axes]
+        if not self.bundle["incidents"].empty:
+            figures += report.table_pages(self.bundle["incidents"], "Chronologie")
+        lineups = self.bundle["lineups"]
+        if not lineups.empty:
+            cols = [c for c in LINEUP_BASE + LINEUP_GROUPS["Résumé"] if c in lineups]
+            figures += report.table_pages(lineups[cols], "Statistiques des joueurs")
+        try:
+            report.save(path, figures)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export PDF", f"Impossible d'écrire le fichier :\n{exc}")
 
     def _show_stats(self):
         if not self.bundle or "stats" not in self.bundle:

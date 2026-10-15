@@ -1,12 +1,12 @@
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QCompleter, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QSplitter,
-                               QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QCompleter, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
+                               QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from ...analysis import per90, percentiles, rank_in, similar_players
 from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
-from .. import charts
-from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, rounded_pixmap, table_card
+from .. import charts, report
+from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, rounded_pixmap, table_card, tool_button
 from . import Page
 
 
@@ -27,8 +27,10 @@ def fill_player_combo(box: QComboBox, df: pd.DataFrame, with_none=False):
     if with_none:
         box.addItem("- aucun -", None)
     if not df.empty:
+        league = "league" in df
         for r in df.sort_values("minutesPlayed", ascending=False).itertuples():
-            box.addItem(f"{r.player} ({r.team}, {POSITIONS[r.pos]})", int(r.player_id))
+            extra = f", {r.league}" if league else ""
+            box.addItem(f"{r.player} ({r.team}, {POSITIONS[r.pos]}{extra})", int(r.player_id))
     box.blockSignals(False)
 
 
@@ -47,6 +49,15 @@ class ProfilePage(Page):
     def __init__(self, state):
         super().__init__(state)
         self.player_id = None
+        self._facts = []
+
+        self.follow_btn = tool_button("Suivre", "fa5s.star", "Ajouter / retirer de la liste de suivi (tableau de bord)")
+        self.follow_btn.clicked.connect(self._toggle_follow)
+        pdf = tool_button("Exporter PDF", "fa5s.file-pdf", "Fiche complète en PDF (graphiques et statistiques)")
+        pdf.clicked.connect(self.export_pdf)
+        self.header.actions.addWidget(self.follow_btn)
+        self.header.actions.addWidget(pdf)
+        state.watchlist_changed.connect(self._update_follow)
 
         self.picker = player_combo()
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=270, suffix=" min")
@@ -113,9 +124,14 @@ class ProfilePage(Page):
         self.similar_table.selectionModel().selectionChanged.connect(self._show_similar_radar)
         self.similar_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         self.similar_radar = ChartWidget()
+        self.similar_scope = QComboBox()
+        self.similar_scope.addItem("Dans la compétition actuelle", "league")
+        self.similar_scope.addItem("Dans les 5 grands championnats", "big5")
+        similar_card = table_card(self.similar_table, "Joueurs au profil le plus proche",
+                                  "clic : radar · double-clic : fiche")
+        similar_card.body.insertWidget(1, self.similar_scope)
         similar = QSplitter(Qt.Horizontal)
-        similar.addWidget(table_card(self.similar_table, "Joueurs au profil le plus proche",
-                                     "clic : radar · double-clic : fiche"))
+        similar.addWidget(similar_card)
         similar.addWidget(chart_card(self.similar_radar))
         similar.setSizes([560, 520])
         self._similar_ctx = None  # (pool par 90, centiles, métriques) du dernier calcul
@@ -149,6 +165,8 @@ class ProfilePage(Page):
         content.addLayout(right, 1)
         self.body.addLayout(content, 1)
 
+        self.similar_scope.currentIndexChanged.connect(self._on_similar_scope)
+        state.big5_changed.connect(lambda df: self._fill_similar() if self.similar_scope.currentData() == "big5" else None)
         self.picker.currentIndexChanged.connect(self._on_pick)
         self.min_minutes.valueChanged.connect(self.refresh)
         state.players_changed.connect(self._on_players)
@@ -194,6 +212,7 @@ class ProfilePage(Page):
         if p is None:
             return
         ctx, pid = self.ctx, int(p.player_id)
+        self._update_follow()
         self.name.setText(p.player)
         self.team_name.setText(p.team)
         self._refresh_images()
@@ -219,7 +238,7 @@ class ProfilePage(Page):
                                f"Centiles vs {len(pool)} joueurs au même poste · {ctx.label} · "
                                f"≥ {self.min_minutes.value()} min · valeurs par 90 min (hors %)")
         self._fill_all_stats(p, pool, pool90, me)
-        self._fill_similar(p, pool90, keys)
+        self._fill_similar()
         self._career_for = None
         self._maybe_load_career()
 
@@ -243,6 +262,8 @@ class ProfilePage(Page):
         rows = []
         for k in keys:
             label, cat, kind = ALL_PLAYER_METRICS[k]
+            if cat == "Gardien" and p.pos != "G":
+                continue  # stats de gardien sans objet pour un joueur de champ
             total = p[k]
             if pd.isna(total) and kind != "info":
                 continue
@@ -254,16 +275,34 @@ class ProfilePage(Page):
             })
         self.all_table.set_dataframe(pd.DataFrame(rows))
 
-    def _fill_similar(self, p, pool90, keys):
+    def _on_similar_scope(self):
+        if self.similar_scope.currentData() == "big5" and self.state.big5 is None:
+            self.similar_radar.message("Chargement des 5 grands championnats… (environ 40 requêtes la première fois)")
+            self.state.request_big5()
+        else:
+            self._fill_similar()
+
+    def _fill_similar(self):
+        p = self._row()
+        source = self.state.players_pool(self.similar_scope.currentData())
+        if p is None or source is None or source.empty:
+            return
+        keys = POSITION_TEMPLATES[p.pos]
+        pool = source[(source["pos"] == p.pos) & (source["minutesPlayed"] >= self.min_minutes.value())]
+        if pool[pool["player_id"] == p.player_id].empty:
+            pool = pd.concat([pool, p.to_frame().T], ignore_index=True).infer_objects()
+        pool90 = per90(pool).reset_index(drop=True)
         sim = similar_players(pool90, int(p.player_id), keys)
-        self._similar_ctx = (pool90.reset_index(drop=True), percentiles(pool90.reset_index(drop=True), keys), keys)
+        self._similar_ctx = (pool90, percentiles(pool90, keys), keys)
         if sim.empty:
             self.similar_table.set_dataframe(sim)
             return self.similar_radar.message("Pas assez de joueurs au même poste")
         labels = {k: ALL_PLAYER_METRICS[k][0] for k in keys}
+        league = pool90.set_index("player_id")["league"].to_dict() if "league" in pool90 else {}
         view = pd.DataFrame({
-            "Joueur": sim["player"], "Équipe": sim["team"], "Minutes": sim["minutesPlayed"],
-            "Similarité %": sim["similarity"].round(1),
+            "Joueur": sim["player"], "Équipe": sim["team"],
+            **({"Championnat": sim["player_id"].map(league)} if league else {}),
+            "Minutes": sim["minutesPlayed"], "Similarité %": sim["similarity"].round(1),
             "Points forts communs": [", ".join(labels[k] for k in s.split(", ") if k) for s in sim["shared"]],
             "player_id": sim["player_id"], "team_id": sim["team_id"],
         })
@@ -300,7 +339,44 @@ class ProfilePage(Page):
         self.career_table.set_dataframe(df, hidden=("_start",))
         charts.career(self.career_chart, df, f"Évolution de {name}")
 
+    # --- suivi & export ---------------------------------------------------------
+    def _toggle_follow(self):
+        p = self._row()
+        if p is not None:
+            self.state.toggle_follow(int(p.player_id), p.player, p.team)
+
+    def _update_follow(self):
+        p = self._row()
+        followed = p is not None and self.state.is_followed(int(p.player_id))
+        self.follow_btn.setText(" Suivi" if followed else " Suivre")
+        self.follow_btn.setIcon(icon("fa5s.star", "#f5b301") if followed else icon("fa5.star"))
+
+    def export_pdf(self):
+        p = self._row()
+        if p is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Exporter la fiche", f"fiche_{p.player}.pdf", "PDF (*.pdf)")
+        if not path:
+            return
+        kpis = [(tile.findChild(QLabel, "KpiLabel").text(), tile.value.text()) for tile in self.kpis.values()]
+        photo = self.state.images.get("player", p.player_id)
+        figures = [report.cover(p.player, f"{p.team} · {POSITIONS[p.pos]} · {self.ctx.label}", self._facts, kpis,
+                                report.pixmap_to_array(photo))]
+        for chart in (self.pct_chart, self.form_chart, self.similar_radar, self.career_chart):
+            if chart.figure.axes:
+                figures.append(chart.figure)
+        if not self.similar_table.model_.dataframe().empty:
+            figures += report.table_pages(self.similar_table.visible_dataframe(), "Profils similaires")
+        figures += report.table_pages(self.all_table.visible_dataframe(), "Toutes les statistiques")
+        try:
+            report.save(path, figures)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export PDF", f"Impossible d'écrire le fichier :\n{exc}")
+
     def _on_info(self, info):
+        self._facts = [("Poste", info["position"]), ("Âge", f"{info['age']} ans" if info["age"] else "-"),
+                       ("Nationalité", info["country"] or "-"), ("Taille", f"{info['height']} cm" if info["height"] else "-"),
+                       ("Pied fort", info["foot"]), ("Valeur estimée", info["value"]), ("Contrat", info["contract"])]
         while self.facts.count():
             w = self.facts.takeAt(0).widget()
             if w:

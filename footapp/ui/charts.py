@@ -3,8 +3,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from mplsoccer import Pitch
-from scipy.ndimage import gaussian_filter
 
 from . import theme
 from .widgets import ChartWidget
@@ -24,6 +22,7 @@ def _title(ax, text, sub=None):
 
 
 def _pitch(**kw):
+    from mplsoccer import Pitch  # import différé : ~2 s de chargement (scipy), inutile au démarrage
     return Pitch(pitch_type="opta", pitch_color=theme.SURFACE, line_color=theme.PITCH_LINE,
                  linewidth=1, goal_type="box", **kw)
 
@@ -273,6 +272,119 @@ def cumulative_xg(chart: ChartWidget, shots: pd.DataFrame, home: str, away: str)
     chart.draw()
 
 
+def diverging_bars(chart: ChartWidget, labels, values, title: str, subtitle: str,
+                   pos_label: str, neg_label: str):
+    """Barres horizontales autour de zéro : positif en bleu, négatif en rouge."""
+    fig = chart.clear()
+    values = np.asarray(values, dtype=float)
+    if len(values) == 0 or np.isnan(values).all():
+        return chart.message("Données indisponibles pour cette compétition")
+    ax = fig.add_subplot()
+    y = np.arange(len(values))
+    ax.barh(y, values, height=0.66, color=[theme.DIV_HIGH if v >= 0 else theme.DIV_LOW for v in values])
+    ax.axvline(0, color=theme.AXIS, lw=1)
+    span = np.nanmax(np.abs(values)) or 1
+    for yi, v in zip(y, values):
+        ax.text(v + (0.02 if v >= 0 else -0.02) * span, yi, f"{v:+.1f}", va="center",
+                ha="left" if v >= 0 else "right", fontsize=8, color=theme.INK2)
+    ax.set_yticks(y, labels, fontsize=8.5)
+    ax.invert_yaxis()
+    ax.set_xlim(-span * 1.25, span * 1.25)
+    ax.xaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.spines[["left"]].set_visible(False)
+    ax.tick_params(left=False)
+    ax.legend(handles=[Patch(color=theme.DIV_HIGH, label=pos_label), Patch(color=theme.DIV_LOW, label=neg_label)],
+              loc="upper center", bbox_to_anchor=(0.5, -0.05), ncol=2, fontsize=8)
+    _title(ax, title, subtitle)
+    chart.draw()
+
+
+def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
+    fig = chart.clear()
+    if form.empty:
+        return chart.message("Aucun match joué")
+    ax = fig.add_subplot()
+    x = np.arange(len(form))
+    has_xg = form["xg"].notna().any()
+    cols = (("xg", "xg_roll", theme.HOME, "xG pour"), ("xga", "xga_roll", theme.AWAY, "xG contre")) if has_xg else \
+        (("gf", None, theme.HOME, "Buts pour"), ("ga", None, theme.AWAY, "Buts contre"))
+    for raw, roll, color, label in cols:
+        pts = ax.scatter(x, form[raw], s=26, color=color, alpha=0.45, edgecolor="none")
+        if roll:
+            ax.plot(x, form[roll], color=color, lw=2.2, label=f"{label} (moyenne sur {window} matchs)")
+        else:
+            ax.plot(x, form[raw], color=color, lw=2, label=label)
+        chart.add_hover(ax, pts, [f"{r.date:%d/%m} {r.venue} vs {r.opponent} : {r.gf}-{r.ga}\n{label} : {_num(v)}"
+                                  for r, v in zip(form.itertuples(), form[raw])])
+    top = np.nanmax(form[[c[0] for c in cols]].to_numpy(dtype=float)) * 1.25 + 0.2
+    for xi, r in zip(x, form.itertuples()):
+        ax.text(xi, top, r.result, ha="center", va="center", fontsize=8.5, color=theme.INK, weight="bold")
+    ax.set_xticks(x, [f"{r.opponent[:10]}\n{r.venue}" for r in form.itertuples()], fontsize=7.5)
+    ax.set_ylim(0, top * 1.08)
+    ax.yaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.legend(loc="upper left", fontsize=8.5, bbox_to_anchor=(0, 0.93))
+    basis = "xG" if has_xg else "buts (xG indisponibles)"
+    _title(ax, f"Forme de {team}", f"{basis} match par match · lettres : résultat (V/N/D) · survolez un point")
+    chart.draw()
+
+
+def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
+    fig = chart.clear()
+    if not pred:
+        return chart.message("Pas assez de matchs joués pour un pronostic")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 3.2], width_ratios=[1.1, 1])
+    # probabilités 1 / N / 2
+    ax = fig.add_subplot(gs[0, :])
+    parts = [(pred["home_win"], theme.HOME, home), (pred["draw"], theme.DIV_MID, "Nul"),
+             (pred["away_win"], theme.AWAY, away)]
+    left = 0
+    for p, color, label in parts:
+        ax.barh(0, p, left=left, color=color, height=0.6, edgecolor=theme.SURFACE, linewidth=2)
+        if p > 0.07:
+            ax.text(left + p / 2, 0, f"{label}\n{p:.0%}", ha="center", va="center", fontsize=9,
+                    color="#ffffff", weight="bold")
+        left += p
+    ax.set_xlim(0, 1)
+    ax.axis("off")
+    ax.set_title(f"{home}  {pred['lam_home']:.2f} - {pred['lam_away']:.2f}  {away}   (buts attendus)",
+                 fontsize=10.5, color=theme.INK, weight="bold")
+    # matrice des scores
+    ax2 = fig.add_subplot(gs[1, 0])
+    m = pred["matrix"][:6, :6] * 100
+    ax2.imshow(m, cmap=theme.SEQ_CMAP, origin="upper")
+    for i in range(6):
+        for j in range(6):
+            ax2.text(j, i, f"{m[i, j]:.0f}", ha="center", va="center", fontsize=8,
+                     color=theme.INK if m[i, j] > m.max() * 0.45 else theme.INK2)
+    ax2.set_xticks(range(6))
+    ax2.set_yticks(range(6))
+    ax2.set_xlabel(f"Buts {away}")
+    ax2.set_ylabel(f"Buts {home}")
+    ax2.set_title("Probabilité de chaque score (%)", fontsize=9.5, color=theme.INK2)
+    ax2.tick_params(length=0)
+    for s in ax2.spines.values():
+        s.set_visible(False)
+    # scores les plus probables
+    ax3 = fig.add_subplot(gs[1, 1])
+    scores = pred["top_scores"]
+    y = np.arange(len(scores))
+    ax3.barh(y, [p * 100 for _, p in scores], color=theme.HOME, height=0.6)
+    for yi, (s, p) in zip(y, scores):
+        ax3.text(p * 100 + 0.3, yi, f"{p:.0%}", va="center", fontsize=8.5, color=theme.INK2)
+    ax3.set_yticks(y, [s for s, _ in scores])
+    ax3.invert_yaxis()
+    ax3.spines[["left", "bottom"]].set_visible(False)
+    ax3.tick_params(left=False, bottom=False)
+    ax3.set_xticks([])
+    ax3.set_title("Scores les plus probables", fontsize=9.5, color=theme.INK2)
+    fig.text(0.01, 0.005, f"Modèle de Poisson sur les {pred['basis']} de la saison (forces attaque/défense, "
+                          "avantage du terrain) - indicatif, ne tient compte ni des absences ni de la forme récente.",
+             fontsize=7.5, color=theme.MUTED)
+    chart.draw()
+
+
 def _shot_xy(df, is_home):
     # Sofascore : x = distance au but visé (0-100), y = largeur. Domicile attaque vers la droite.
     if is_home:
@@ -341,6 +453,7 @@ def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str):
     pitch = _pitch(line_zorder=2)
     pitch.draw(ax=ax)
     stats = pitch.bin_statistic(points["x"], 100 - points["y"], statistic="count", bins=(30, 20))
+    from scipy.ndimage import gaussian_filter
     stats["statistic"] = gaussian_filter(stats["statistic"], 1.2)
     pitch.heatmap(stats, ax=ax, cmap=theme.SEQ_CMAP, zorder=1)
     ax.annotate("", xy=(62, -4), xytext=(38, -4), annotation_clip=False,

@@ -1,7 +1,8 @@
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSplitter, QTabWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QSplitter, QTabWidget
 
+from ...analysis import team_form, venue_split
 from ...config import ALL_TEAM_METRICS, TEAM_CATEGORIES
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card, tool_button
@@ -66,9 +67,28 @@ class TeamsPage(Page):
         sb.addStretch()
         sc_card.body.insertLayout(0, sb)
 
+        # forme d'une équipe et bilan domicile / extérieur (lignes équipe x match, chargées à la demande)
+        self.form_team = QComboBox()
+        self.form_team.setMinimumWidth(220)
+        self.form_window = QSpinBox(minimum=2, maximum=10, value=5, prefix="Moyenne glissante : ", suffix=" matchs")
+        self.form_chart = ChartWidget()
+        form_card = chart_card(self.form_chart)
+        fb = QHBoxLayout()
+        for w in (QLabel("Équipe"), self.form_team, self.form_window):
+            fb.addWidget(w)
+        fb.addStretch()
+        form_card.body.insertLayout(0, fb)
+        self.venue_table = DataTable()
+        self.venue_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
+        venue_card = table_card(self.venue_table, "Bilan domicile / extérieur", "moyennes par match")
+
         tabs = QTabWidget()
         tabs.addTab(bar_card, "Classement par métrique")
         tabs.addTab(sc_card, "Nuage X / Y")
+        tabs.addTab(form_card, "Forme d'une équipe")
+        tabs.addTab(venue_card, "Domicile / extérieur")
+        self.chart_tabs, self._match_tabs = tabs, (form_card, venue_card)
+        tabs.currentChanged.connect(self._maybe_load_matches)
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(table_card(self.table))
         splitter.addWidget(tabs)
@@ -79,17 +99,72 @@ class TeamsPage(Page):
         self.per_match.toggled.connect(self.refresh)
         for box in (self.category, self.metric_box, self.x_metric, self.y_metric):
             box.currentIndexChanged.connect(self.refresh)
+        self.form_team.currentIndexChanged.connect(self._show_form)
+        self.form_window.valueChanged.connect(self._show_form)
         state.context_changed.connect(self._on_context)
         state.standings_changed.connect(lambda df: self.load() if self.isVisible() else None)
+        state.team_matches_changed.connect(self._on_team_matches)
+        state.images.loaded.connect(lambda *_: self.venue_table.model_.refresh_icons())
 
     def _on_context(self, ctx):
         self.df = pd.DataFrame()
         self.table.set_dataframe(self.df)
         self.bar_chart.message("Les statistiques d'équipes se chargent à l'ouverture de la page")
+        self.form_team.clear()
+        self.form_chart.message("Chargement des matchs de la saison…")
+        self.venue_table.set_dataframe(pd.DataFrame())
+        self._maybe_load_matches()
+
+    def _maybe_load_matches(self, *_):
+        if self.chart_tabs.currentWidget() in self._match_tabs and self.isVisible():
+            self.state.request_team_matches()
+
+    def _on_team_matches(self, tm):
+        if tm.empty:
+            return self.form_chart.message("Aucun match joué")
+        current = self.form_team.currentText()
+        self.form_team.blockSignals(True)
+        self.form_team.clear()
+        for team in sorted(tm["team"].unique()):
+            self.form_team.addItem(team)
+        self.form_team.setCurrentIndex(max(0, self.form_team.findText(current)))
+        self.form_team.blockSignals(False)
+        venue = venue_split(tm)
+        venue["team_id"] = venue["Équipe"].map(self.state.team_logo_ids(venue["Équipe"].unique()))
+        self.venue_table.set_dataframe(venue)
+        self._select_wanted_team()
+        self._show_form()
+
+    def show_team(self, name: str):
+        """Ouvre l'onglet « Forme » sur l'équipe `name` (nom Sofascore du classement)."""
+        self._wanted_team = name
+        self.chart_tabs.setCurrentWidget(self._match_tabs[0])
+        self._select_wanted_team()
+
+    def _select_wanted_team(self):
+        name = getattr(self, "_wanted_team", None)
+        if not name or self.form_team.count() == 0:
+            return
+        names = [self.form_team.itemText(i) for i in range(self.form_team.count())]
+        if name not in names:  # noms Understat : on passe par les identifiants d'équipe
+            ids = self.state.team_logo_ids(names)
+            target = self.state.team_logo_ids([name]).get(name)
+            name = next((n for n in names if ids.get(n) == target and target is not None), None)
+        if name:
+            self.form_team.setCurrentText(name)
+        self._wanted_team = None
+
+    def _show_form(self):
+        tm, team = self.state.team_matches, self.form_team.currentText()
+        if tm is None or not team:
+            return
+        window = self.form_window.value()
+        charts.team_form(self.form_chart, team_form(tm, team, window), team, window)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.load()
+        self._maybe_load_matches()
 
     def load(self):
         ctx, standings = self.ctx, self.state.standings
