@@ -13,12 +13,13 @@ Python + PySide6, avec installeur Windows (thème sombre ou clair).
 | **Tableau de bord** | Chiffres clés de la compétition, top 5 par métrique (buts, xG, passes clés, dribbles, actions défensives, notes, gardiens), finition buts vs xG |
 | **Classement** | Classement avec logos, **classement xG** (points attendus xPts, chance / malchance, PPDA officiel), attaque vs défense, points par match |
 | **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
-| **Pronostics** | Probabilités 1 / N / 2 des prochains matchs (modèle de Poisson sur les xG), matrice des scores, simulation de n'importe quelle affiche |
+| **Pronostics** | Probabilités 1 / N / 2 des prochains matchs (modèle de Poisson sur les xG), matrice des scores, simulation de n'importe quelle affiche, **fiabilité du modèle** (rejoué sur les matchs passés : taux de réussite, score de Brier, calibration) |
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
 | **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **profils similaires** (joueurs statistiquement les plus proches), **carrière** saison par saison, toutes les stats avec rang au poste, **liste de suivi**, **export PDF** |
 | **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre, référentiel compétition ou **5 grands championnats** |
 | **Recherche avancée** | Joueurs remplissant plusieurs critères (centiles par poste), compétition ou 5 grands championnats, recherches enregistrables |
-| **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA, **forme** (xG glissants), **bilan domicile / extérieur** |
+| **Indices personnalisés** | Scores composés de métriques pondérées (Créateur, Finisseur, Récupérateur… ou les vôtres), classement et export |
+| **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA, **comparaison de deux équipes** (radar), **forme** (xG glissants), **bilan domicile / extérieur** |
 | **Aide & paramètres** | Glossaire, thème sombre / clair, vérification des mises à jour, gestion du cache |
 
 Graphiques interactifs : survol = détail, barre d'outils = zoom et export PNG.
@@ -29,6 +30,9 @@ La compétition, la saison et la page ouvertes sont retrouvées au lancement sui
 <p>
   <img src="docs/screenshots/classement-xg.png" width="49%">
   <img src="docs/screenshots/pronostics.png" width="49%">
+  <img src="docs/screenshots/fiabilite-pronostics.png" width="49%">
+  <img src="docs/screenshots/indices.png" width="49%">
+  <img src="docs/screenshots/comparaison-equipes.png" width="49%">
   <img src="docs/screenshots/recherche-avancee.png" width="49%">
   <img src="docs/screenshots/theme-clair.png" width="49%">
   <img src="docs/screenshots/fiche-joueur.png" width="49%">
@@ -76,6 +80,14 @@ $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # 
 Les tests vérifient notamment que chaque métrique demandée à l'API est toujours renseignée :
 si Sofascore renomme un champ, le test échoue et indique lequel. Ils tournent à chaque push (GitHub Actions)
 avant la construction de l'exe.
+
+## Sécurité
+
+- Données reçues d'Internet jamais interprétées comme du HTML dans l'interface ; exports Excel/CSV protégés
+  contre l'injection de formules ; lien de mise à jour vérifié (Releases de ce dépôt uniquement).
+- Cache en JSON uniquement (jamais de code exécutable), écrit de façon atomique, purgé automatiquement.
+- Dépendances vérifiées avec `pip-audit` ; build GitHub en lecture seule hors publication, actions figées
+  sur des commits précis.
 
 ## Données
 
