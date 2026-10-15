@@ -2,7 +2,7 @@
 
 Application de bureau pour **data analysts football** : statistiques de la saison en cours
 (passes, dribbles, duels, xG/xA, tirs, pressing…), fiches joueurs, comparaisons et analyse de matchs.
-Python + PySide6, distribuable en un seul `.exe` Windows.
+Python + PySide6, avec installeur Windows (thème sombre ou clair).
 
 ![Tableau de bord](docs/screenshots/dashboard.png)
 
@@ -11,19 +11,26 @@ Python + PySide6, distribuable en un seul `.exe` Windows.
 | Section | Contenu |
 |---|---|
 | **Tableau de bord** | Chiffres clés de la compétition, top 5 par métrique (buts, xG, passes clés, dribbles, actions défensives, notes, gardiens), finition buts vs xG |
-| **Classement** | Classement avec logos, attaque vs défense, points par match |
+| **Classement** | Classement avec logos, **classement xG** (points attendus xPts, chance / malchance, PPDA officiel), attaque vs défense, points par match |
 | **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
+| **Pronostics** | Probabilités 1 / N / 2 des prochains matchs (modèle de Poisson sur les xG), matrice des scores, simulation de n'importe quelle affiche |
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
-| **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **profils similaires** (joueurs statistiquement les plus proches), **carrière** saison par saison, toutes les stats avec rang au poste |
-| **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre (deux métriques au choix) |
-| **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA (pressing), total ou par match |
-| **Aide & glossaire** | Définitions (xG, npxG, xGOT, centiles, PPDA…), gestion du cache |
+| **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **profils similaires** (joueurs statistiquement les plus proches), **carrière** saison par saison, toutes les stats avec rang au poste, **liste de suivi**, **export PDF** |
+| **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre, référentiel compétition ou **5 grands championnats** |
+| **Recherche avancée** | Joueurs remplissant plusieurs critères (centiles par poste), compétition ou 5 grands championnats, recherches enregistrables |
+| **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA, **forme** (xG glissants), **bilan domicile / extérieur** |
+| **Aide & paramètres** | Glossaire, thème sombre / clair, vérification des mises à jour, gestion du cache |
 
 Graphiques interactifs : survol = détail, barre d'outils = zoom et export PNG.
-Double-clic sur un joueur dans n'importe quel tableau → sa fiche.
-La compétition, la saison et la page ouvertes sont retrouvées au lancement suivant.
+Double-clic sur un joueur dans n'importe quel tableau → sa fiche. **Ctrl+K** : recherche globale (joueurs, équipes, pages).
+Matchs en cours actualisés automatiquement (mode direct). Rapports PDF de fiches joueurs et de matchs.
+La compétition, la saison et la page ouvertes sont retrouvées au lancement suivant ; l'appli signale les nouvelles versions publiées.
 
 <p>
+  <img src="docs/screenshots/classement-xg.png" width="49%">
+  <img src="docs/screenshots/pronostics.png" width="49%">
+  <img src="docs/screenshots/recherche-avancee.png" width="49%">
+  <img src="docs/screenshots/theme-clair.png" width="49%">
   <img src="docs/screenshots/fiche-joueur.png" width="49%">
   <img src="docs/screenshots/comparaison.png" width="49%">
   <img src="docs/screenshots/profils-similaires.png" width="49%">
@@ -34,9 +41,11 @@ La compétition, la saison et la page ouvertes sont retrouvées au lancement sui
 
 ## Installation
 
-### Exécutable
-Télécharger `FootAnalytics.exe` dans les [Releases](../../releases) (ou l'artefact du dernier build
-dans l'onglet *Actions*), puis le lancer. Aucune installation de Python nécessaire.
+### Installeur (recommandé)
+Télécharger `FootAnalytics-Setup-<version>.exe` dans les [Releases](../../releases) (ou l'artefact du dernier
+build dans l'onglet *Actions*) et le lancer : installation sans droits administrateur, raccourcis menu Démarrer
+et Bureau, désinstallation depuis les paramètres Windows. Une version portable (`.zip`) est aussi fournie.
+Aucune installation de Python nécessaire.
 
 ### Depuis les sources
 ```powershell
@@ -45,12 +54,15 @@ python -m venv .venv
 .\.venv\Scripts\python.exe main.py
 ```
 
-### Générer l'exécutable
+### Construire l'application
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1   # -> dist\FootAnalytics.exe
+powershell -ExecutionPolicy Bypass -File build.ps1
+# -> dist\FootAnalytics\ (application), dist\FootAnalytics-<version>-portable.zip,
+#    dist\FootAnalytics-Setup-<version>.exe (si Inno Setup 6 est installé : winget install JRSoftware.InnoSetup)
 ```
 Le workflow GitHub Actions (`.github/workflows/build.yml`) le fait automatiquement à chaque push sur `main` ;
-pousser un tag `v*` (ex. `git tag v2.0.0 && git push --tags`) publie l'exe dans une Release.
+pousser un tag `v*` (ex. `git tag v2.2.0 && git push --tags`) publie l'installeur et le zip dans une Release.
+L'icône se régénère avec `python tools\make_icon.py`.
 
 ## Tests
 
@@ -67,8 +79,9 @@ avant la construction de l'exe.
 
 ## Données
 
-Source : API JSON publique utilisée par le site sofascore.com (non officielle, sans clé),
-interrogée via `curl_cffi` qui imite un navigateur.
+Sources : API JSON publique utilisée par le site sofascore.com (non officielle, sans clé), interrogée via
+`curl_cffi` qui imite un navigateur ; **Understat** pour les xG par match, xPts et PPDA des 5 grands championnats,
+et comme source de secours si Sofascore est indisponible.
 
 - **Usage personnel / expérimental uniquement** : l'API n'est pas documentée et ses conditions
   n'autorisent pas un usage commercial.
@@ -83,14 +96,18 @@ main.py                       point d'entrée
 footapp/
   config.py                   compétitions, catalogue des métriques et libellés
   api/sofascore.py            client HTTP + cache disque (JSON et images)
+  api/understat.py            client Understat (xG par match, xPts, PPDA, secours)
   data.py                     appels API -> DataFrames pandas (+ métriques dérivées)
-  analysis.py                 par 90 min, centiles, rangs, profils similaires
+  analysis.py                 par 90 min, centiles, profils similaires, recherche, Poisson (xPts, pronostics)
+  updates.py                  vérification des Releases GitHub
   ui/
     main_window.py            fenêtre : navigation latérale + barre de contexte
     state.py                  état partagé (compétition, classement, joueurs)
     theme.py                  couleurs, feuille de style Qt, style matplotlib
     widgets.py                cartes, tuiles, tableaux, graphiques, images, tâches de fond
     charts.py                 tous les graphiques (matplotlib / mplsoccer)
+    report.py                 rapports PDF
+    palette.py                recherche globale Ctrl+K
     pages/                    une page par section
 tests/                        tests pytest + réponses API enregistrées (fixtures/api.json.gz)
 ```
