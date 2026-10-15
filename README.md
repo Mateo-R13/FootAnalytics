@@ -12,19 +12,22 @@ Python + PySide6, distribuable en un seul `.exe` Windows.
 |---|---|
 | **Tableau de bord** | Chiffres clés de la compétition, top 5 par métrique (buts, xG, passes clés, dribbles, actions défensives, notes, gardiens), finition buts vs xG |
 | **Classement** | Classement avec logos, attaque vs défense, points par match |
-| **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
+| **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
-| **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, toutes les stats avec rang au poste |
+| **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **profils similaires** (joueurs statistiquement les plus proches), **carrière** saison par saison, toutes les stats avec rang au poste |
 | **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre (deux métriques au choix) |
 | **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA (pressing), total ou par match |
 | **Aide & glossaire** | Définitions (xG, npxG, xGOT, centiles, PPDA…), gestion du cache |
 
 Graphiques interactifs : survol = détail, barre d'outils = zoom et export PNG.
 Double-clic sur un joueur dans n'importe quel tableau → sa fiche.
+La compétition, la saison et la page ouvertes sont retrouvées au lancement suivant.
 
 <p>
   <img src="docs/screenshots/fiche-joueur.png" width="49%">
   <img src="docs/screenshots/comparaison.png" width="49%">
+  <img src="docs/screenshots/profils-similaires.png" width="49%">
+  <img src="docs/screenshots/xg-cumules.png" width="49%">
   <img src="docs/screenshots/match.png" width="49%">
   <img src="docs/screenshots/joueurs.png" width="49%">
 </p>
@@ -49,6 +52,19 @@ powershell -ExecutionPolicy Bypass -File build.ps1   # -> dist\FootAnalytics.exe
 Le workflow GitHub Actions (`.github/workflows/build.yml`) le fait automatiquement à chaque push sur `main` ;
 pousser un tag `v*` (ex. `git tag v2.0.0 && git push --tags`) publie l'exe dans une Release.
 
+## Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q                 # hors ligne, sur des réponses API enregistrées
+$env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # contre la vraie API
+.\.venv\Scripts\python.exe -m tests.record_fixtures      # ré-enregistrer les réponses de référence
+```
+
+Les tests vérifient notamment que chaque métrique demandée à l'API est toujours renseignée :
+si Sofascore renomme un champ, le test échoue et indique lequel. Ils tournent à chaque push (GitHub Actions)
+avant la construction de l'exe.
+
 ## Données
 
 Source : API JSON publique utilisée par le site sofascore.com (non officielle, sans clé),
@@ -68,7 +84,7 @@ footapp/
   config.py                   compétitions, catalogue des métriques et libellés
   api/sofascore.py            client HTTP + cache disque (JSON et images)
   data.py                     appels API -> DataFrames pandas (+ métriques dérivées)
-  analysis.py                 par 90 min, centiles, rangs
+  analysis.py                 par 90 min, centiles, rangs, profils similaires
   ui/
     main_window.py            fenêtre : navigation latérale + barre de contexte
     state.py                  état partagé (compétition, classement, joueurs)
@@ -76,6 +92,7 @@ footapp/
     widgets.py                cartes, tuiles, tableaux, graphiques, images, tâches de fond
     charts.py                 tous les graphiques (matplotlib / mplsoccer)
     pages/                    une page par section
+tests/                        tests pytest + réponses API enregistrées (fixtures/api.json.gz)
 ```
 
 **Ajouter une compétition** : `(nom, id)` dans `COMPETITIONS` (l'id figure dans l'URL Sofascore du tournoi).

@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "FootAnalytics"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME / "cache"
 
