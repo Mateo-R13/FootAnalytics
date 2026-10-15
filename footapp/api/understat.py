@@ -37,7 +37,7 @@ class UnderstatClient:
         path = f"/getLeagueData/{league}/{season_start}"
         file = self.cache_dir / (hashlib.sha1(path.encode()).hexdigest() + ".json")
         cached = self._read(file)
-        if cached is not None and time.time() - file.stat().st_mtime < ttl:
+        if cached is not None and ttl > 0 and max(0.0, time.time() - file.stat().st_mtime) < ttl:
             return cached
         try:
             with self._lock:

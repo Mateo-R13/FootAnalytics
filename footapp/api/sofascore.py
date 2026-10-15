@@ -80,7 +80,10 @@ class SofascoreClient:
             file = self._cache_path(path, permanent)
             if not file.exists():
                 continue
-            fresh = permanent or ttl is None or time.time() - file.stat().st_mtime < ttl
+            # ttl=0 : toujours redemander (l'âge d'un fichier tout juste écrit peut être négatif sous Windows,
+            # la précision de l'horodatage des fichiers étant différente de celle de l'horloge)
+            age = max(0.0, time.time() - file.stat().st_mtime)
+            fresh = permanent or ttl is None or (ttl > 0 and age < ttl)
             try:
                 return json.loads(file.read_text("utf-8")), fresh
             except (OSError, ValueError):
