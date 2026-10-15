@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QCompleter, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QSplitter,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from ...analysis import per90, percentiles, rank_in
+from ...analysis import per90, percentiles, rank_in, similar_players
 from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, rounded_pixmap, table_card
@@ -107,11 +107,37 @@ class ProfilePage(Page):
         form.addWidget(chart_card(self.form_chart))
         form.addWidget(table_card(self.matches_table))
         form.setSizes([380, 260])
+        # profils similaires : tableau + radar joueur vs joueur sélectionné
+        self.similar_table = DataTable()
+        self.similar_table.row_activated.connect(lambda r: state.open_player.emit(int(r["player_id"])))
+        self.similar_table.selectionModel().selectionChanged.connect(self._show_similar_radar)
+        self.similar_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
+        self.similar_radar = ChartWidget()
+        similar = QSplitter(Qt.Horizontal)
+        similar.addWidget(table_card(self.similar_table, "Joueurs au profil le plus proche",
+                                     "clic : radar · double-clic : fiche"))
+        similar.addWidget(chart_card(self.similar_radar))
+        similar.setSizes([560, 520])
+        self._similar_ctx = None  # (pool par 90, centiles, métriques) du dernier calcul
+
+        # carrière : chargée à l'ouverture de l'onglet (une requête par saison)
+        self.career_chart = ChartWidget()
+        self.career_table = DataTable()
+        career = QSplitter(Qt.Vertical)
+        career.addWidget(chart_card(self.career_chart))
+        career.addWidget(table_card(self.career_table, "Saison par saison", "toutes compétitions"))
+        career.setSizes([340, 300])
+        self._career_for = None
+
         self.tabs = QTabWidget()
         self.tabs.addTab(chart_card(self.pct_chart), "Profil (centiles)")
         self.tabs.addTab(form, "Forme match par match")
+        self.tabs.addTab(similar, "Profils similaires")
+        self.tabs.addTab(career, "Carrière")
         self.tabs.addTab(table_card(self.all_table, "Toutes les statistiques",
                                     "total, par 90 min, centile et rang au poste"), "Toutes les stats")
+        self.career_tab = career
+        self.tabs.currentChanged.connect(self._maybe_load_career)
 
         right = QVBoxLayout()
         right.setSpacing(10)
@@ -128,6 +154,7 @@ class ProfilePage(Page):
         state.players_changed.connect(self._on_players)
         state.context_changed.connect(lambda ctx: self.pct_chart.message("Chargement…"))
         state.images.loaded.connect(self._refresh_images)
+        state.images.loaded.connect(lambda *_: self.similar_table.model_.refresh_icons())
 
     # --- sélection -----------------------------------------------------------
     def _on_players(self, df):
@@ -192,6 +219,9 @@ class ProfilePage(Page):
                                f"Centiles vs {len(pool)} joueurs au même poste · {ctx.label} · "
                                f"≥ {self.min_minutes.value()} min · valeurs par 90 min (hors %)")
         self._fill_all_stats(p, pool, pool90, me)
+        self._fill_similar(p, pool90, keys)
+        self._career_for = None
+        self._maybe_load_career()
 
         self.form_chart.message("Chargement des matchs…")
         self.state.runner.run("profile_info", lambda progress: self.state.data.player_info(pid), self._on_info)
@@ -223,6 +253,52 @@ class ProfilePage(Page):
                 "Rang au poste": rank_in(pool90, k, pool90.at[me, k]) if kind != "info" else "",
             })
         self.all_table.set_dataframe(pd.DataFrame(rows))
+
+    def _fill_similar(self, p, pool90, keys):
+        sim = similar_players(pool90, int(p.player_id), keys)
+        self._similar_ctx = (pool90.reset_index(drop=True), percentiles(pool90.reset_index(drop=True), keys), keys)
+        if sim.empty:
+            self.similar_table.set_dataframe(sim)
+            return self.similar_radar.message("Pas assez de joueurs au même poste")
+        labels = {k: ALL_PLAYER_METRICS[k][0] for k in keys}
+        view = pd.DataFrame({
+            "Joueur": sim["player"], "Équipe": sim["team"], "Minutes": sim["minutesPlayed"],
+            "Similarité %": sim["similarity"].round(1),
+            "Points forts communs": [", ".join(labels[k] for k in s.split(", ") if k) for s in sim["shared"]],
+            "player_id": sim["player_id"], "team_id": sim["team_id"],
+        })
+        self.similar_table.set_dataframe(view)
+        self.similar_table.selectRow(0)
+
+    def _show_similar_radar(self):
+        rec, p = self.similar_table.selected_record(), self._row()
+        if rec is None or p is None or self._similar_ctx is None:
+            return
+        pool, pct, keys = self._similar_ctx
+        series = []
+        for pid, name in ((int(p.player_id), p.player), (int(rec["player_id"]), rec["Joueur"])):
+            i = pool.index[pool["player_id"] == pid]
+            if i.empty:
+                return
+            series.append((name, pct.loc[i[0], keys].fillna(0).tolist(), pool.loc[i[0], keys].tolist()))
+        charts.radar(self.similar_radar, [ALL_PLAYER_METRICS[k][0] for k in keys], series,
+                     f"Similarité : {rec['Similarité %']:.0f} %",
+                     f"Centiles au poste · {self.ctx.label} · par 90 min (hors %)")
+
+    def _maybe_load_career(self, *_):
+        p = self._row()
+        if p is None or self.tabs.currentWidget() is not self.career_tab or self._career_for == int(p.player_id):
+            return
+        pid, name = int(p.player_id), p.player
+        self._career_for = pid
+        self.career_chart.message("Chargement de la carrière…")
+        self.career_table.set_dataframe(pd.DataFrame())
+        self.state.runner.run("profile_career", lambda progress: self.state.data.player_career(pid, progress=progress),
+                              lambda df: self._on_career(df, name))
+
+    def _on_career(self, df, name):
+        self.career_table.set_dataframe(df, hidden=("_start",))
+        charts.career(self.career_chart, df, f"Évolution de {name}")
 
     def _on_info(self, info):
         while self.facts.count():

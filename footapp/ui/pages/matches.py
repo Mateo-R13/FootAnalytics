@@ -103,12 +103,14 @@ class MatchesPage(Page):
         lineup_split.setStretchFactor(1, 2)
 
         self.shots_chart = ChartWidget()
+        self.xg_chart = ChartWidget()
         self.positions_chart = ChartWidget()
         self.timeline = DataTable()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(stats_card, "Statistiques")
         self.tabs.addTab(chart_card(self.shots_chart), "Tirs && xG")
+        self.tabs.addTab(chart_card(self.xg_chart), "xG cumulés")
         self.tabs.addTab(lineup_split, "Joueurs")
         self.tabs.addTab(chart_card(self.positions_chart), "Positions moyennes")
         self.tabs.addTab(table_card(self.timeline, "Chronologie", "buts, cartons, remplacements"), "Chronologie")
@@ -153,6 +155,7 @@ class MatchesPage(Page):
                 current_index = i
         self.round_box.blockSignals(False)
         if rounds:
+            self._auto_round = True  # autorise un repli sur la journée précédente si rien n'est joué
             self.round_box.setCurrentIndex(current_index)
             self._load_round()
 
@@ -179,8 +182,12 @@ class MatchesPage(Page):
             if e["status"] == "finished":
                 last_finished = item
         self._refresh_logos()
+        auto, self._auto_round = getattr(self, "_auto_round", False), False
         if last_finished:
             self.events_list.setCurrentItem(last_finished)
+        elif auto and self.round_box.currentIndex() > 0:
+            # journée en cours pas encore jouée : on affiche la précédente
+            self.round_box.setCurrentIndex(self.round_box.currentIndex() - 1)
 
     def _refresh_logos(self, *_):
         for i in range(self.events_list.count()):
@@ -209,12 +216,12 @@ class MatchesPage(Page):
         self._refresh_logos()
         if not played:
             self.bundle = None
-            for c in (self.stats_chart, self.shots_chart, self.positions_chart, self.heatmap_chart):
+            for c in (self.stats_chart, self.shots_chart, self.xg_chart, self.positions_chart, self.heatmap_chart):
                 c.message("Match pas encore joué")
             self.lineup_table.set_dataframe(pd.DataFrame())
             self.timeline.set_dataframe(pd.DataFrame())
             return
-        for c in (self.stats_chart, self.shots_chart, self.positions_chart):
+        for c in (self.stats_chart, self.shots_chart, self.xg_chart, self.positions_chart):
             c.message("Chargement du match…")
         self.state.runner.run("match", lambda progress: self.state.data.match_bundle(e), self._on_match)
 
@@ -226,6 +233,7 @@ class MatchesPage(Page):
             self.info.setText(self.info.text() + f" · systèmes : {f.get('home') or '?'} / {f.get('away') or '?'}")
         self._show_stats()
         charts.shotmap(self.shots_chart, bundle["shots"], bundle["momentum"], e["home"], e["away"])
+        charts.cumulative_xg(self.xg_chart, bundle["shots"], e["home"], e["away"])
         charts.average_positions(self.positions_chart, bundle["avg_positions"], e["home"], e["away"])
         self.timeline.set_dataframe(bundle["incidents"])
         self.lineup_team.blockSignals(True)

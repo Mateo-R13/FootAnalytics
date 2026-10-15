@@ -212,6 +212,67 @@ def rating_timeline(chart: ChartWidget, matches: pd.DataFrame, title: str):
     chart.draw()
 
 
+def career(chart: ChartWidget, df: pd.DataFrame, title: str):
+    """xG/90 et xA/90 saison par saison (une même unité -> un seul axe)."""
+    fig = chart.clear()
+    if df.empty:
+        return chart.message("Aucune statistique de carrière disponible")
+    d = df[df["Minutes"] >= 270].sort_values(["_start", "Compétition"]).reset_index(drop=True)
+    if d.empty:
+        return chart.message("Pas de saison avec au moins 270 minutes jouées")
+    ax = fig.add_subplot()
+    x = np.arange(len(d))
+    handles = []
+    for col, color, label in (("xG /90", theme.HOME, "xG / 90 min"), ("xA /90", theme.AWAY, "xA / 90 min")):
+        y = pd.to_numeric(d[col], errors="coerce")
+        ax.plot(x, y, color=color, lw=2)
+        pts = ax.scatter(x, y, s=50, color=color, edgecolor=theme.SURFACE, linewidth=2, zorder=3)
+        chart.add_hover(ax, pts, [f"{r['Saison']} · {r['Compétition']} ({r['Équipe']})\n{label} : {_num(v)}"
+                                  f"\n{r['Matchs']} matchs · {r['Minutes']} min · {r['Buts']} buts · {r['Passes déc.']} PD"
+                                  for (_, r), v in zip(d.iterrows(), y)])
+        handles.append(Line2D([], [], color=color, lw=2, marker="o", label=label))
+    ax.set_xticks(x, [f"{r['Saison']}\n{r['Compétition'][:16]}" for _, r in d.iterrows()], fontsize=7.5)
+    ax.set_ylim(bottom=0)
+    ax.yaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.legend(handles=handles, loc="upper left", fontsize=8.5)
+    _title(ax, title, "Saisons avec ≥ 270 min · survolez un point pour le détail")
+    chart.draw()
+
+
+def cumulative_xg(chart: ChartWidget, shots: pd.DataFrame, home: str, away: str):
+    """Courbe en escalier des xG cumulés de chaque équipe, buts marqués."""
+    fig = chart.clear()
+    if shots.empty:
+        return chart.message("Pas de données de tirs pour ce match")
+    ax = fig.add_subplot()
+    end = max(95, float(shots["t"].max()) + 2)
+    for is_home, color, team in ((True, theme.HOME, home), (False, theme.AWAY, away)):
+        d = shots[shots["is_home"] == is_home].sort_values("t")
+        t = np.r_[0, d["t"].values, end]
+        xg = np.r_[0, d["xg"].cumsum().values, d["xg"].sum()]
+        ax.step(t, xg, where="post", color=color, lw=2, label=f"{team} : {d['xg'].sum():.2f} xG")
+        goals = d[d["type"] == "goal"]
+        if not goals.empty:
+            cum = d["xg"].cumsum()[goals.index]
+            pts = ax.scatter(goals["t"], cum, s=70, color=color, edgecolor=theme.SURFACE, linewidth=2, zorder=3)
+            chart.add_hover(ax, pts, [f"But de {r.player} ({r.minute}')\nxG du tir : {r.xg:.2f}"
+                                      for r in goals.itertuples()])
+            for r, y in zip(goals.itertuples(), cum):
+                ax.annotate(r.player.split()[-1], (r.t, y), xytext=(0, 8), textcoords="offset points",
+                            ha="center", fontsize=8, color=theme.INK)
+    ax.axvline(45, color=theme.AXIS, lw=1, ls=":")
+    ax.set_xlim(0, end)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("Minute")
+    ax.set_ylabel("xG cumulés")
+    ax.yaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.legend(loc="upper left", fontsize=9)
+    _title(ax, "Évolution des expected goals", "Chaque marche = un tir · points = buts · survolez pour le détail")
+    chart.draw()
+
+
 def _shot_xy(df, is_home):
     # Sofascore : x = distance au but visé (0-100), y = largeur. Domicile attaque vers la droite.
     if is_home:

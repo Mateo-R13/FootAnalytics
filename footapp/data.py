@@ -14,6 +14,17 @@ def _ut(ut: int, sid: int) -> str:
     return f"/unique-tournament/{ut}/season/{sid}"
 
 
+def _season_start(year: str) -> int:
+    """Année de début d'une saison : "26/27" -> 2026, "2025" -> 2025."""
+    head = str(year).split("/")[0].strip()
+    if not head.isdigit():
+        return 0
+    value = int(head)
+    if value >= 100:
+        return value
+    return 2000 + value if value < 70 else 1900 + value
+
+
 def _ratio(num, den, scale=1.0):
     num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -172,6 +183,44 @@ class FootData:
             df.insert(0, "Date", df.pop("date").dt.strftime("%d/%m/%Y"))
         return df
 
+    def player_career(self, pid: int, max_seasons: int = 16, progress=None) -> pd.DataFrame:
+        """Statistiques du joueur saison par saison, toutes compétitions confondues."""
+        data = self.client.get(f"/player/{pid}/statistics/seasons", ttl=24 * HOUR) or {}
+        entries = []
+        for t in data.get("uniqueTournamentSeasons", []):
+            tour = t["uniqueTournament"]
+            for i, s in enumerate(t.get("seasons", [])):
+                entries.append((tour["id"], tour["name"], s["id"], s.get("year", ""), i == 0))
+        # plus récentes d'abord : "26/27" -> 2026, "2025" -> 2025
+        entries.sort(key=lambda e: _season_start(e[3]), reverse=True)
+        rows = []
+        for n, (ut, comp, sid, year, latest) in enumerate(entries[:max_seasons]):
+            if progress:
+                progress(f"Carrière : {comp} {year} ({n + 1}/{min(len(entries), max_seasons)})")
+            # une saison passée ne bouge plus -> cache permanent
+            d = self.client.get(f"/player/{pid}/unique-tournament/{ut}/season/{sid}/statistics/overall",
+                                ttl=6 * HOUR, permanent=not latest) or {}
+            s = d.get("statistics") or {}
+            if not s.get("appearances"):
+                continue
+            minutes = s.get("minutesPlayed") or 0
+            per90 = lambda k: round(s[k] / minutes * 90, 2) if minutes and s.get(k) is not None else None
+            rows.append({
+                "Saison": year, "Compétition": comp, "Équipe": (d.get("team") or {}).get("name", ""),
+                "Matchs": s.get("appearances"), "Titularisations": s.get("matchesStarted"), "Minutes": minutes,
+                "Buts": s.get("goals"), "Passes déc.": s.get("assists"),
+                "xG": s.get("expectedGoals"), "xA": s.get("expectedAssists"),
+                "Buts /90": per90("goals"), "xG /90": per90("expectedGoals"), "xA /90": per90("expectedAssists"),
+                "Passes clés /90": per90("keyPasses"), "Dribbles réussis /90": per90("successfulDribbles"),
+                "% passes": s.get("accuratePassesPercentage"), "% duels": s.get("totalDuelsWonPercentage"),
+                "Note moy.": s.get("rating"), "_start": _season_start(year),
+            })
+        df = pd.DataFrame(rows)
+        for col in ("xG", "xA", "% passes", "% duels", "Note moy."):
+            if col in df:
+                df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+        return df
+
     # --- matchs ------------------------------------------------------------
     def rounds(self, ut: int, sid: int) -> tuple[list[dict], int | None]:
         data = self.client.get(f"{_ut(ut, sid)}/rounds", ttl=6 * HOUR) or {}
@@ -318,6 +367,9 @@ class FootData:
                 "player": s["player"]["name"], "is_home": s.get("isHome"), "type": s.get("shotType"),
                 "situation": s.get("situation"), "body": s.get("bodyPart"), "xg": s.get("xg") or 0.0,
                 "xgot": s.get("xgot"), "minute": s.get("time"), "added": s.get("addedTime"),
+                # instant du tir en minutes décimales (temps additionnel inclus)
+                "t": s["timeSeconds"] / 60 if s.get("timeSeconds") is not None
+                else (s.get("time") or 0) + (s.get("addedTime") or 0),
                 "x": c.get("x"), "y": c.get("y"),
             })
         return pd.DataFrame(rows)
