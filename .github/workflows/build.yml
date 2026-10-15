@@ -1,12 +1,13 @@
-# Construit FootAnalytics.exe sur Windows.
+# Teste puis construit FootAnalytics.exe sur Windows.
 # - à chaque push sur main : l'exe est disponible dans l'onglet Actions (artefact)
-# - sur un tag v* (ex. v2.0.0) : l'exe est attaché à une Release GitHub
+# - sur un tag v* (ex. v2.1.0) : l'exe est attaché à une Release GitHub
 name: Build Windows exe
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -16,33 +17,38 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Installer les dépendances
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
-      - name: Vérifier que le code s'importe
+      - name: Lancer les tests (réponses API enregistrées, sans réseau)
+        run: python -m pytest -q
+
+      - name: Vérifier que l'interface s'importe
         run: python -c "import footapp.ui.main_window"
         env:
           QT_QPA_PLATFORM: offscreen
 
       - name: Construire l'exécutable
+        if: github.event_name != 'pull_request'
         run: powershell -ExecutionPolicy Bypass -File build.ps1
         env:
           PYTHON_EXE: python
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: FootAnalytics-windows
           path: dist/FootAnalytics.exe
 
       - name: Publier la release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/FootAnalytics.exe
