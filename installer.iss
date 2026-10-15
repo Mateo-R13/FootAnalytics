@@ -1,4 +1,4 @@
-; Installeur Windows de FootAnalytics (Inno Setup 6).
+﻿; Installeur Windows de FootAnalytics (Inno Setup 6).
 ; Installation par utilisateur : aucun droit administrateur requis.
 ; Compilé par build.ps1 :  ISCC /DAppVersion=x.y.z installer.iss
 
