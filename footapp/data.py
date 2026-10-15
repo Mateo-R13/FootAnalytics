@@ -4,7 +4,9 @@ from datetime import date, datetime
 import numpy as np
 import pandas as pd
 
-from .api.sofascore import SofascoreClient
+from .api.sofascore import ApiError, SofascoreClient
+from .api.understat import UnderstatClient
+from .analysis import expected_points
 from .config import PENALTY_XG, PLAYER_METRICS, POSITIONS, TEAM_EXTRA_FIELDS, TEAM_METRICS
 
 HOUR = 3600
@@ -25,6 +27,39 @@ def _season_start(year: str) -> int:
     return 2000 + value if value < 70 else 1900 + value
 
 
+_NAME_NOISE = {"fc", "as", "rc", "ac", "sc", "ogc", "afc", "cf", "ssc", "sv", "vfb", "vfl", "tsg", "fsv", "1.",
+               "de", "olympique", "stade", "club", "calcio", "real", "the"}
+
+
+def _normalize_team(name: str) -> str:
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode().lower()
+    words = [w for w in plain.replace("-", " ").replace("&", " ").split() if w not in _NAME_NOISE]
+    return " ".join(words) or plain
+
+
+def link_team_ids(names, standings: pd.DataFrame) -> dict:
+    """Associe des noms d'équipes d'une autre source (Understat) aux team_id Sofascore du classement."""
+    from difflib import SequenceMatcher
+    if standings.empty or "team_id" not in standings:
+        return {}
+    targets = {_normalize_team(r["Équipe"]): r["team_id"] for _, r in standings.iterrows() if pd.notna(r["team_id"])}
+    pairs = []
+    for name in set(names):
+        a = _normalize_team(name)
+        for b, tid in targets.items():
+            score = SequenceMatcher(None, a, b).ratio()
+            if a in b or b in a:
+                score = max(score, 0.9)
+            pairs.append((score, name, tid))
+    links, used = {}, set()
+    for score, name, tid in sorted(pairs, key=lambda p: p[0], reverse=True):  # appariement glouton unique
+        if score >= 0.5 and name not in links and tid not in used:
+            links[name] = tid
+            used.add(tid)
+    return links
+
+
 def _ratio(num, den, scale=1.0):
     num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -32,15 +67,35 @@ def _ratio(num, den, scale=1.0):
 
 
 class FootData:
-    def __init__(self, client: SofascoreClient):
+    def __init__(self, client: SofascoreClient, understat: UnderstatClient | None = None):
         self.client = client
+        self.understat = understat
 
     # --- compétition / saison --------------------------------------------
     def seasons(self, ut: int) -> list[dict]:
         data = self.client.get(f"/unique-tournament/{ut}/seasons", ttl=12 * HOUR) or {}
         return [{"id": s["id"], "name": s.get("year") or s["name"]} for s in data.get("seasons", [])]
 
+    def season_start(self, ut: int, sid: int) -> int:
+        """Année de début de la saison `sid` (ex. 2026 pour « 26/27 »)."""
+        name = next((s["name"] for s in self.seasons(ut) if s["id"] == sid), "")
+        return _season_start(name)
+
+    def _understat(self, ut: int, sid: int) -> dict | None:
+        if self.understat is None or not self.understat.supports(ut):
+            return None
+        return self.understat.league_data(ut, self.season_start(ut, sid))
+
     def standings(self, ut: int, sid: int) -> pd.DataFrame:
+        try:
+            return self._standings(ut, sid)
+        except ApiError:
+            fallback = self._understat_standings(ut, sid)
+            if fallback is None:
+                raise
+            return fallback
+
+    def _standings(self, ut: int, sid: int) -> pd.DataFrame:
         data = self.client.get(f"{_ut(ut, sid)}/standings/total", ttl=HOUR) or {}
         rows = []
         for group in data.get("standings", []):
@@ -69,7 +124,16 @@ class FootData:
 
     # --- joueurs : saison ----------------------------------------------------
     def player_season_stats(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
-        """Statistiques cumulées de tous les joueurs de la compétition."""
+        """Statistiques cumulées de tous les joueurs ; secours Understat si Sofascore est indisponible."""
+        try:
+            return self._player_season_stats(ut, sid, progress)
+        except ApiError:
+            fallback = self._understat_players(ut, sid)
+            if fallback is None:
+                raise
+            return fallback
+
+    def _player_season_stats(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
         fields = ",".join(PLAYER_METRICS)
         rows = []
         for code, pos_label in POSITIONS.items():
@@ -255,11 +319,23 @@ class FootData:
         events.sort(key=lambda e: e["date"])
         return events
 
+    def refresh_event(self, event: dict) -> dict:
+        """Score et statut à jour d'un match (mode direct)."""
+        e = (self.client.get(f"/event/{event['id']}", ttl=30) or {}).get("event") or {}
+        if not e:
+            return event
+        return {**event,
+                "home_score": (e.get("homeScore") or {}).get("current"),
+                "away_score": (e.get("awayScore") or {}).get("current"),
+                "status": (e.get("status") or {}).get("type", event["status"]),
+                "status_label": (e.get("status") or {}).get("description", event["status_label"])}
+
     def match_bundle(self, event: dict) -> dict:
         """Toutes les données d'un match en un appel (pour la page Matchs)."""
         eid = event["id"]
         finished = event["status"] == "finished"
-        get = lambda p: self.client.get(f"/event/{eid}{p}", ttl=120, permanent=finished)
+        ttl = 45 if event["status"] == "inprogress" else 120
+        get = lambda p: self.client.get(f"/event/{eid}{p}", ttl=ttl, permanent=finished)
         lineups_raw = get("/lineups") or {}
         return {
             "event": event,
@@ -442,4 +518,144 @@ class FootData:
         # Passes adverses dans leur propre moitié / actions défensives : proxy de l'intensité du pressing
         df["ppda"] = _ratio(df["ownHalfPassesTotalAgainst"],
                             df[["tackles", "interceptions", "fouls"]].sum(axis=1, min_count=1))
+        return df
+
+    # --- équipe x match (classement xG, forme, pronostics) -------------------
+    def team_matches(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
+        """Une ligne par équipe et par match joué : buts, xG, xGA, points, xPts…
+
+        Understat pour les 5 grands championnats (une requête, PPDA officiel),
+        sinon reconstruit à partir des statistiques de match Sofascore.
+        """
+        us = None
+        try:
+            us = self._understat(ut, sid)
+        except ApiError:
+            us = None  # Understat indisponible : on se rabat sur Sofascore
+        df = self._understat_team_matches(us) if us else self._sofascore_team_matches(ut, sid, progress)
+        if df.empty:
+            return df
+        df = df.sort_values(["date", "team"]).reset_index(drop=True)
+        df["result"] = np.select([df["gf"] > df["ga"], df["gf"] == df["ga"]], ["V", "N"], "D")
+        df["pts"] = df["result"].map({"V": 3, "N": 1, "D": 0})
+        if df["xpts"].isna().all() and df["xg"].notna().any():
+            df["xpts"] = [expected_points(x, y) for x, y in zip(df["xg"], df["xga"])]
+        return df
+
+    @staticmethod
+    def _understat_team_matches(data: dict) -> pd.DataFrame:
+        # adversaire : retrouvé dans la liste des matchs (équipe + date)
+        opponents = {}
+        for m in data.get("dates", []):
+            if m.get("isResult"):
+                opponents[(m["h"]["title"], m["datetime"])] = m["a"]["title"]
+                opponents[(m["a"]["title"], m["datetime"])] = m["h"]["title"]
+        rows = []
+        for team in data.get("teams", {}).values():
+            for h in team.get("history", []):
+                ppda, allowed = h.get("ppda") or {}, h.get("ppda_allowed") or {}
+                rows.append({
+                    "date": pd.to_datetime(h["date"]), "team": team["title"],
+                    "opponent": opponents.get((team["title"], h["date"]), ""),
+                    "venue": "Dom." if h.get("h_a") == "h" else "Ext.",
+                    "gf": int(h.get("scored", 0)), "ga": int(h.get("missed", 0)),
+                    "xg": float(h["xG"]), "xga": float(h["xGA"]),
+                    "npxg": float(h.get("npxG", np.nan)), "npxga": float(h.get("npxGA", np.nan)),
+                    "xpts": float(h.get("xpts", np.nan)),
+                    "ppda_att": ppda.get("att"), "ppda_def": ppda.get("def"),
+                    "oppda_att": allowed.get("att"), "oppda_def": allowed.get("def"),
+                    "deep": h.get("deep"), "deep_allowed": h.get("deep_allowed"),
+                    "source": "Understat",
+                })
+        return pd.DataFrame(rows)
+
+    def _sofascore_team_matches(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
+        rounds, _ = self.rounds(ut, sid)
+        events = []
+        for i, rnd in enumerate(rounds):
+            if progress:
+                progress(f"Matchs de la saison : {rnd['name']} ({i + 1}/{len(rounds)})")
+            round_events = self.round_events(ut, sid, rnd)
+            events += [e for e in round_events if e["status"] == "finished"]
+            if round_events and all(e["status"] == "notstarted" for e in round_events):
+                break  # journées suivantes pas encore jouées
+        rows = []
+        for i, e in enumerate(events):
+            if progress and i % 5 == 0:
+                progress(f"xG des matchs : {i + 1}/{len(events)}")
+            stats = self._match_stats(self.client.get(f"/event/{e['id']}/statistics", permanent=True))
+            full = stats[stats["period"] == "ALL"].set_index("key") if not stats.empty else pd.DataFrame()
+            val = lambda key, side: float(full.at[key, f"{side}_value"]) if key in full.index and \
+                pd.notna(full.at[key, f"{side}_value"]) else np.nan
+            for side, other, team, opp in (("home", "away", e["home"], e["away"]), ("away", "home", e["away"], e["home"])):
+                rows.append({
+                    "date": e["date"], "team": team, "opponent": opp, "venue": "Dom." if side == "home" else "Ext.",
+                    "gf": e[f"{side}_score"], "ga": e[f"{other}_score"],
+                    "xg": val("expectedGoals", side), "xga": val("expectedGoals", other),
+                    "npxg": np.nan, "npxga": np.nan, "xpts": np.nan,
+                    "ppda_att": np.nan, "ppda_def": np.nan, "oppda_att": np.nan, "oppda_def": np.nan,
+                    "deep": np.nan, "deep_allowed": np.nan, "source": "Sofascore",
+                })
+        return pd.DataFrame(rows)
+
+    def upcoming_events(self, ut: int, sid: int, limit: int = 20) -> list[dict]:
+        """Prochains matchs (journée en cours puis suivante)."""
+        rounds, current = self.rounds(ut, sid)
+        idx = next((i for i, r in enumerate(rounds) if r["round"] == current and not r.get("slug")), 0)
+        events = []
+        for rnd in rounds[idx: idx + 3]:
+            events += [e for e in self.round_events(ut, sid, rnd) if e["status"] == "notstarted"]
+            if len(events) >= limit:
+                break
+        return events[:limit]
+
+    # --- secours Understat -------------------------------------------------------
+    def _understat_players(self, ut: int, sid: int) -> pd.DataFrame | None:
+        try:
+            data = self._understat(ut, sid)
+        except ApiError:
+            return None
+        if not data:
+            return None
+        rows = []
+        for p in data.get("players", []):
+            num = lambda k: float(p.get(k) or 0)
+            positions = [x for x in str(p.get("position", "")).split() if x != "S"]
+            pos = {"GK": "G", "D": "D", "M": "M", "F": "F"}.get(positions[0] if positions else "M", "M")
+            row = {k: np.nan for k in PLAYER_METRICS}
+            row.update({
+                "appearances": num("games"), "minutesPlayed": num("time"), "goals": num("goals"),
+                "expectedGoals": num("xG"), "assists": num("assists"), "expectedAssists": num("xA"),
+                "totalShots": num("shots"), "keyPasses": num("key_passes"),
+                "yellowCards": num("yellow_cards"), "redCards": num("red_cards"),
+                "player": p["player_name"], "player_id": -int(p["id"]),  # négatif : pas un id Sofascore
+                "team": p.get("team_title", ""), "team_id": None, "pos": pos, "position": POSITIONS[pos],
+            })
+            rows.append(row)
+        df = self.add_player_derived(pd.DataFrame(rows))
+        npxg = {-int(p["id"]): float(p.get("npxG") or 0) for p in data.get("players", [])}
+        npg = {-int(p["id"]): float(p.get("npg") or 0) for p in data.get("players", [])}
+        df["npxg"] = df["player_id"].map(npxg)
+        df["nonPenaltyGoals"] = df["player_id"].map(npg)
+        df.attrs["source"] = "Understat"
+        return df
+
+    def _understat_standings(self, ut: int, sid: int) -> pd.DataFrame | None:
+        try:
+            data = self._understat(ut, sid)
+        except ApiError:
+            return None
+        if not data:
+            return None
+        rows = []
+        for t in data.get("teams", {}).values():
+            h = t.get("history", [])
+            gf, ga = sum(int(m["scored"]) for m in h), sum(int(m["missed"]) for m in h)
+            rows.append({"Équipe": t["title"], "J": len(h), "G": sum(m["wins"] for m in h),
+                         "N": sum(m["draws"] for m in h), "P": sum(m["loses"] for m in h),
+                         "BP": gf, "BC": ga, "Diff": gf - ga, "Pts": sum(m["pts"] for m in h), "team_id": None})
+        df = pd.DataFrame(rows).sort_values(["Pts", "Diff", "BP"], ascending=False).reset_index(drop=True)
+        df.insert(0, "Pos", range(1, len(df) + 1))
+        df["Pts/match"] = (df["Pts"] / df["J"].where(df["J"] > 0)).round(2)
+        df.attrs["source"] = "Understat"
         return df

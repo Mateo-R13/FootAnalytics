@@ -1,11 +1,19 @@
 """Constantes de l'application : compétitions, catalogue des métriques, libellés."""
 import os
+import sys
 from pathlib import Path
 
 APP_NAME = "FootAnalytics"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
+GITHUB_REPO = "Mateo-R13/FootAnalytics"
 
 CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME / "cache"
+
+
+def resource_path(relative: str) -> Path:
+    """Chemin d'un fichier livré avec l'application (sources ou exécutable PyInstaller)."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / relative
 
 # (nom affiché, identifiant Sofascore "unique-tournament")
 COMPETITIONS = [

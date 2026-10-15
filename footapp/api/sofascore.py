@@ -63,7 +63,7 @@ class SofascoreClient:
         return sum(f.stat().st_size for f in self.cache_dir.rglob("*") if f.is_file()) / 1e6
 
     def clear_all_cache(self):
-        for sub in ("temp", "permanent", "images"):
+        for sub in ("temp", "permanent", "images", "understat"):
             shutil.rmtree(self.cache_dir / sub, ignore_errors=True)
         (self.cache_dir / "temp").mkdir(parents=True, exist_ok=True)
         (self.cache_dir / "permanent").mkdir(parents=True, exist_ok=True)
