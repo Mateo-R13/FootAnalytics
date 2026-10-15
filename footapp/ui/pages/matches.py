@@ -54,6 +54,8 @@ class MatchesPage(Page):
         self.score.setAlignment(Qt.AlignCenter)
         self.info = QLabel("Sélectionnez un match", objectName="Muted")
         self.info.setAlignment(Qt.AlignCenter)
+        for label in (self.home_name, self.away_name, self.info):  # noms venus de l'API : texte brut
+            label.setTextFormat(Qt.PlainText)
         head = Card(margins=12)
         line = QHBoxLayout()
         line.addStretch()

@@ -6,6 +6,7 @@ pour limiter le nombre de requêtes (et éviter d'être bloqué).
 """
 import hashlib
 import json
+import os
 import shutil
 import threading
 import time
@@ -16,6 +17,16 @@ from curl_cffi import requests
 
 class ApiError(RuntimeError):
     pass
+
+
+def _write_atomic(file: Path, content: bytes):
+    """Écrit dans un fichier temporaire puis le renomme : un arrêt brutal ne laisse jamais de fichier tronqué."""
+    tmp = file.with_name(f"{file.name}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_bytes(content)
+        os.replace(tmp, file)
+    except OSError:
+        tmp.unlink(missing_ok=True)  # disque plein, droits… : le cache est facultatif
 
 
 class SofascoreClient:
@@ -36,6 +47,28 @@ class SofascoreClient:
         self._last_request = 0.0
         self._fp_index = 0
         self._session = requests.Session(impersonate=self.FINGERPRINTS[0])
+        self.purge_old_entries()
+
+    def purge_old_entries(self, temp_days: int = 14, image_days: int = 60):
+        """Supprime les entrées temporaires et images trop anciennes pour que le cache ne grossisse pas sans fin."""
+        now = time.time()
+        for sub, days in (("temp", temp_days), ("images", image_days)):
+            folder = self.cache_dir / sub
+            if not folder.exists():
+                continue
+            for file in folder.iterdir():
+                try:
+                    if file.is_file() and now - file.stat().st_mtime > days * 86400:
+                        file.unlink()
+                except OSError:
+                    pass  # fichier utilisé ailleurs : on réessaiera au prochain lancement
+        # anciennes versions : une ressource absente (404) pouvait être gardée définitivement
+        for file in (self.cache_dir / "permanent").glob("*.json"):
+            try:
+                if file.stat().st_size < 32 and json.loads(file.read_text("utf-8")).get("data") is None:
+                    file.unlink()
+            except (OSError, ValueError):
+                pass
 
     # --- cache -----------------------------------------------------------
     def _cache_path(self, path: str, permanent: bool) -> Path:
@@ -86,8 +119,10 @@ class SofascoreClient:
                 return cached.get("data")
             raise
 
-        file = self._cache_path(path, permanent)
-        file.write_text(json.dumps({"data": data}), "utf-8")
+        # une ressource absente (404) peut apparaître plus tard (stats publiées après le match) :
+        # elle n'est jamais mise en cache définitivement
+        file = self._cache_path(path, permanent and data is not None)
+        _write_atomic(file, json.dumps({"data": data}).encode("utf-8"))
         return data
 
     def get_image(self, path: str, ttl: float = 7 * 24 * 3600) -> bytes | None:
@@ -100,7 +135,7 @@ class SofascoreClient:
         except ApiError:
             return file.read_bytes() if file.exists() else None
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_bytes(content or b"")  # fichier vide = pas d'image, évite de redemander
+        _write_atomic(file, content or b"")  # fichier vide = pas d'image, évite de redemander
         return content
 
     def _fetch(self, path: str, raw: bool = False):

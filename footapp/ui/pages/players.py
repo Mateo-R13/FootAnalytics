@@ -1,5 +1,5 @@
 import pandas as pd
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QSplitter
 
 from ...analysis import per90
@@ -88,7 +88,10 @@ class PlayersPage(Page):
         self.count_label = QLabel(objectName="Muted")
         self.body.addWidget(self.count_label)
 
-        self.search.textChanged.connect(self.refresh)
+        # recherche : recalcul 250 ms après la dernière frappe plutôt qu'à chaque touche
+        self._search_timer = QTimer(self, singleShot=True, interval=250)
+        self._search_timer.timeout.connect(self.refresh)
+        self.search.textChanged.connect(lambda _text: self._search_timer.start())
         for box in (self.position, self.team, self.category, self.metric_box):
             box.currentIndexChanged.connect(self.refresh)
         for w in (self.min_minutes, self.top_n):

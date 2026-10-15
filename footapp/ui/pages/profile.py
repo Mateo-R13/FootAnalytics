@@ -80,6 +80,8 @@ class ProfilePage(Page):
         self.name.setWordWrap(True)
         self.team_logo = QLabel()
         self.team_name = QLabel(objectName="PageSubtitle")
+        for label in (self.name, self.team_name):  # noms venus de l'API : jamais interprétés comme du HTML
+            label.setTextFormat(Qt.PlainText)
         team_row = QHBoxLayout()
         team_row.addWidget(self.team_logo)
         team_row.addWidget(self.team_name, 1)
@@ -388,6 +390,7 @@ class ProfilePage(Page):
         for i, (k, v) in enumerate(facts):
             self.facts.addWidget(QLabel(k, objectName="Muted"), i, 0)
             val = QLabel(v)
+            val.setTextFormat(Qt.PlainText)
             val.setAlignment(Qt.AlignRight)
             self.facts.addWidget(val, i, 1)
 

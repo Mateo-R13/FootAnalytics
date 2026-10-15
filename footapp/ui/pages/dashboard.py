@@ -1,3 +1,5 @@
+import html
+
 import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout,
@@ -64,7 +66,7 @@ class LeaderCard(Card):
             if i < len(top):
                 r = top.iloc[i]
                 name.setText(f'<a href="{int(r.player_id)}" style="color:{theme.INK}; text-decoration:none">'
-                             f'{r.player}</a>')
+                             f'{html.escape(str(r.player))}</a>')  # nom venu de l'API : échappé
                 name.setToolTip(f"{r.player} - {r.team}")
                 v = r[self.metric_key]
                 value.setText(f"{v:.2f}" if not float(v).is_integer() else f"{v:.0f}")

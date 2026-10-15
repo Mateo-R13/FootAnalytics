@@ -1,4 +1,5 @@
 """Briques réutilisables : cartes, graphiques, tableaux, images, tâches de fond."""
+import html
 import math
 from itertools import count
 
@@ -72,6 +73,8 @@ class KpiTile(QFrame):
         lay.addLayout(top)
         self.value = QLabel("-", objectName="KpiValue")
         self.sub = QLabel("", objectName="KpiSub")
+        for label in (self.value, self.sub):  # peuvent afficher des noms venus de l'API : jamais de HTML
+            label.setTextFormat(Qt.PlainText)
         lay.addWidget(self.value)
         lay.addWidget(self.sub)
 
@@ -127,10 +130,13 @@ class Banner(QFrame):
         lay.addWidget(close)
         self.hide()
 
-    def show_message(self, message: str):
-        if self.isVisible() and message in self.text.text():
+    def show_message(self, message: str, rich: bool = False):
+        """rich=False : le message (qui peut contenir des données reçues d'Internet) est affiché tel quel,
+        sans interprétation HTML. rich=True est réservé aux messages construits par l'application."""
+        shown = message if rich else html.escape(message)
+        if self.isVisible() and shown == self.text.text():
             return
-        self.text.setText(message)
+        self.text.setText(shown)
         self.show()
 
 
@@ -250,6 +256,7 @@ class ChartWidget(QWidget):
             self.canvas.mpl_disconnect(cid)
         self._hover_cids.clear()
         self.figure.clear()
+        self.figure.set_layout_engine("constrained")  # certains tracés (radar) passent en placement manuel
         return self.figure
 
     def draw(self):
@@ -305,13 +312,23 @@ class DataFrameModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._df = pd.DataFrame()
+        self._columns, self._values, self._records = [], [], None
         self._icons = {}  # nom de colonne -> fonction(ligne) -> QPixmap | None
         self._colors = {}  # nom de colonne -> fonction(valeur) -> couleur | None
 
     def set_dataframe(self, df: pd.DataFrame):
         self.beginResetModel()
         self._df = df.reset_index(drop=True)
+        # accès cellule par cellule très fréquent (affichage, tri) : listes Python plutôt que pandas
+        self._columns = list(self._df.columns)
+        self._values = self._df.to_numpy(dtype=object).tolist()
+        self._records = None  # lignes sous forme de dict, construites à la demande (icônes)
         self.endResetModel()
+
+    def _record(self, row: int) -> dict:
+        if self._records is None:
+            self._records = self._df.to_dict("records")
+        return self._records[row]
 
     def dataframe(self) -> pd.DataFrame:
         return self._df
@@ -333,38 +350,59 @@ class DataFrameModel(QAbstractTableModel):
     def columnCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self._df.columns)
 
+    _NUMBER = (int, float, np.integer, np.floating)
+    _RIGHT = int(Qt.AlignRight | Qt.AlignVCenter)
+    _LEFT = int(Qt.AlignLeft | Qt.AlignVCenter)
+    # rôles en entiers : comparer un entier à une énumération Qt est lent en Python (appelé des milliers de fois)
+    _DISPLAY, _USER, _ALIGN = Qt.DisplayRole.value, Qt.UserRole.value, Qt.TextAlignmentRole.value
+    _DECORATION, _FOREGROUND = Qt.DecorationRole.value, Qt.ForegroundRole.value
+
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid():
-            return None
-        v = self._df.iat[index.row(), index.column()]
-        col = self._df.columns[index.column()]
-        if role == Qt.DisplayRole:
+        role = getattr(role, "value", role)
+        if role not in (self._DISPLAY, self._USER, self._ALIGN, self._DECORATION, self._FOREGROUND):
+            return None  # rôles non gérés (police, infobulle…) : réponse immédiate
+        v = self._values[index.row()][index.column()]
+        if role == self._DISPLAY:
             return _fmt(v)
-        if role == Qt.UserRole:  # valeur brute pour le tri
+        if role == self._USER:  # valeur brute pour le tri
             if isinstance(v, str):
                 return v
             if v is None or pd.isna(v):
                 return float("-inf")
-            if isinstance(v, (int, float, np.integer, np.floating)):
+            if isinstance(v, self._NUMBER):
                 return float(v)
             return str(v)
-        if role == Qt.DecorationRole and col in self._icons:
-            return self._icons[col](self._df.iloc[index.row()])
-        if role == Qt.ForegroundRole and col in self._colors:
-            c = self._colors[col](v)
-            return QColor(c) if c else None
-        if role == Qt.TextAlignmentRole:
-            if isinstance(v, (int, float, np.integer, np.floating)):
-                return int(Qt.AlignRight | Qt.AlignVCenter)
-            return int(Qt.AlignLeft | Qt.AlignVCenter)
+        if role == self._ALIGN:
+            return self._RIGHT if isinstance(v, self._NUMBER) else self._LEFT
+        if role == self._DECORATION:
+            col = self._columns[index.column()]
+            return self._icons[col](self._record(index.row())) if col in self._icons else None
+        if role == self._FOREGROUND:
+            col = self._columns[index.column()]
+            if col in self._colors:
+                c = self._colors[col](v)
+                return QColor(c) if c else None
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role != Qt.DisplayRole:
             return None
         if orientation == Qt.Horizontal:
-            return str(self._df.columns[section])
+            return str(self._columns[section])
         return str(section + 1)
+
+
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def neutralize_formulas(df: pd.DataFrame) -> pd.DataFrame:
+    """Protège contre l'injection de formules (CSV/Excel) : un texte venu de l'API commençant par = + - @
+    serait exécuté comme formule à l'ouverture dans Excel ; on le préfixe d'une apostrophe."""
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object or pd.api.types.is_string_dtype(out[col]):
+            out[col] = out[col].map(lambda v: "'" + v if isinstance(v, str) and v.startswith(_FORMULA_START) else v)
+    return out
 
 
 class DataTable(QTableView):
@@ -387,6 +425,8 @@ class DataTable(QTableView):
         self.verticalHeader().setDefaultSectionSize(30)
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setHighlightSections(False)
+        # largeur des colonnes estimée sur un échantillon de lignes (sinon toutes les cellules sont mesurées)
+        self.horizontalHeader().setResizeContentsPrecision(40)
         self.horizontalHeader().setStretchLastSection(False)
         self.doubleClicked.connect(self._on_double)
 
@@ -427,7 +467,7 @@ class DataTable(QTableView):
         return df.iloc[order][cols]
 
     def export(self, default_name="export"):
-        df = self.visible_dataframe()
+        df = neutralize_formulas(self.visible_dataframe())
         if df.empty:
             return
         path, _ = QFileDialog.getSaveFileName(
