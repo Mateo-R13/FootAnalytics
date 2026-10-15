@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "FootAnalytics"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 GITHUB_REPO = "Mateo-R13/FootAnalytics"
 
 CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME / "cache"
@@ -289,6 +289,33 @@ DERIVED_TEAM_METRICS = {
 }
 
 ALL_TEAM_METRICS = {**TEAM_METRICS, **DERIVED_TEAM_METRICS}
+
+# Métriques d'équipe où une valeur faible est meilleure (centiles inversés)
+TEAM_LOWER_IS_BETTER = {
+    "goalsConceded", "ppda", "shotsAgainst", "shotsOnTargetAgainst", "bigChancesAgainst", "keyPassesAgainst",
+    "totalPassesAgainst", "accurateFinalThirdPassesAgainst", "dribbleAttemptsWonAgainst",
+    "crossesSuccessfulAgainst", "cornersAgainst", "possessionLost", "errorsLeadingToShot", "errorsLeadingToGoal",
+    "penaltiesCommited", "fouls", "yellowCards", "redCards", "bigChancesMissed", "offsides",
+}
+
+# Profil radar pour comparer deux équipes (valeurs par match, centiles dans la compétition)
+TEAM_RADAR = [
+    "goalsScored", "expectedGoals", "bigChances", "shotsOnTarget", "averageBallPossession",
+    "accurateOppositionHalfPassesPercentage", "keyPasses", "successfulDribbles", "ppda",
+    "interceptions", "duelsWonPercentage", "shotsAgainst", "bigChancesAgainst", "goalsConceded",
+]
+
+# Indices personnalisés proposés par défaut : nom -> [(métrique, poids)]
+INDEX_PRESETS = {
+    "Créateur": [("expectedAssists", 35), ("keyPasses", 25), ("bigChancesCreated", 20),
+                 ("accurateFinalThirdPasses", 20)],
+    "Finisseur": [("npxg", 35), ("goals", 25), ("xgPerShot", 20), ("shotOnTargetPct", 20)],
+    "Récupérateur": [("ballRecovery", 30), ("tackles", 25), ("interceptions", 25), ("totalDuelsWonPercentage", 20)],
+    "Relanceur": [("accuratePasses", 30), ("accuratePassesPercentage", 25), ("accurateLongBalls", 25),
+                  ("accurateOppositionHalfPasses", 20)],
+    "Percuteur": [("successfulDribbles", 40), ("successfulDribblesPercentage", 20), ("wasFouled", 20),
+                  ("touches", 20)],
+}
 TEAM_CATEGORIES = list(dict.fromkeys(cat for _, cat, _ in ALL_TEAM_METRICS.values()))
 # Champs bruts nécessaires aux métriques dérivées, non affichés tels quels
 TEAM_EXTRA_FIELDS = ["ownHalfPassesTotalAgainst"]

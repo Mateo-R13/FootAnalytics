@@ -15,13 +15,36 @@ def per90(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def percentiles(pool: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    """Centile (0-100) de chaque joueur du `pool` pour chaque métrique (NaN si pas de donnée)."""
+def percentiles(pool: pd.DataFrame, keys: list[str], lower_is_better=LOWER_IS_BETTER) -> pd.DataFrame:
+    """Centile (0-100) de chaque ligne du `pool` pour chaque métrique (NaN si pas de donnée).
+
+    `lower_is_better` : métriques où une valeur faible est meilleure (échelle inversée).
+    """
     pct = pool[keys].rank(pct=True, method="average") * 100
     for k in keys:
-        if k in LOWER_IS_BETTER:
+        if k in lower_is_better:
             pct[k] = 100 - pct[k] + 100 / len(pool)
     return pct
+
+
+def composite_index(pool90: pd.DataFrame, weights: list[tuple[str, float]]) -> pd.DataFrame:
+    """Indice personnalisé : moyenne pondérée des centiles (calculés au sein de chaque poste).
+
+    weights : [(métrique, poids)] ; les poids sont normalisés, l'indice va de 0 à 100.
+    Une métrique sans donnée pour un joueur compte comme médiane (50).
+    """
+    weights = [(k, float(w)) for k, w in weights if k and w > 0]
+    if pool90.empty or not weights:
+        return pd.DataFrame()
+    keys = list(dict.fromkeys(k for k, _ in weights))
+    total = sum(w for _, w in weights)
+    pool90 = pool90.reset_index(drop=True)
+    pct = pd.concat([percentiles(group, keys) for _, group in pool90.groupby("pos")]).sort_index()
+    out = pool90.copy()
+    out["index"] = sum(pct[k].fillna(50) * w for k, w in weights) / total
+    for k in keys:
+        out[f"{k}__pct"] = pct[k]
+    return out.sort_values("index", ascending=False)
 
 
 def similar_players(pool: pd.DataFrame, player_id: int, keys: list[str], n: int = 10) -> pd.DataFrame:
@@ -161,6 +184,69 @@ def predict_match(tm: pd.DataFrame, home: str, away: str) -> dict | None:
     top = sorted(flat, reverse=True)[:5]
     return {"lam_home": float(lam_h), "lam_away": float(lam_a), "matrix": m, "home_win": win, "draw": draw,
             "away_win": loss, "top_scores": [(f"{i}-{j}", float(p)) for p, i, j in top], "basis": league["basis"]}
+
+
+OUTCOMES = ("1", "N", "2")
+
+
+def backtest(tm: pd.DataFrame, min_matches: int = 3) -> pd.DataFrame:
+    """Rejoue le modèle de pronostic sur les matchs déjà joués, sans connaître l'avenir.
+
+    Pour chaque journée (date), le modèle est calibré uniquement sur les matchs antérieurs, puis
+    comparé au résultat réel. Un match n'est évalué que si les deux équipes ont joué au moins
+    `min_matches` matchs avant. Renvoie une ligne par match avec probabilités, résultat et scores.
+    """
+    if tm.empty:
+        return pd.DataFrame()
+    home_rows = tm[tm["venue"] == "Dom."].sort_values("date")
+    rows = []
+    for day, games in home_rows.groupby(home_rows["date"].dt.normalize()):
+        past = tm[tm["date"] < day]
+        if past.empty:
+            continue
+        played = past.groupby("team").size()
+        # référence naïve : fréquences 1 / N / 2 observées jusque-là
+        past_home = past[past["venue"] == "Dom."]
+        base = np.array([(past_home["result"] == r).mean() for r in ("V", "N", "D")])
+        for g in games.itertuples():
+            if played.get(g.team, 0) < min_matches or played.get(g.opponent, 0) < min_matches:
+                continue
+            p = predict_match(past, g.team, g.opponent)
+            if p is None:
+                continue
+            probs = np.array([p["home_win"], p["draw"], p["away_win"]])
+            probs = probs / probs.sum()
+            actual = {"V": 0, "N": 1, "D": 2}[g.result]
+            onehot = np.eye(3)[actual]
+            rows.append({
+                "date": g.date, "Domicile": g.team, "Extérieur": g.opponent, "Score": f"{g.gf}-{g.ga}",
+                "1 %": probs[0] * 100, "N %": probs[1] * 100, "2 %": probs[2] * 100,
+                "Pronostic": OUTCOMES[int(probs.argmax())], "Résultat": OUTCOMES[actual],
+                "Correct": bool(probs.argmax() == actual),
+                "brier": float(((probs - onehot) ** 2).sum()),
+                "brier_base": float(((base - onehot) ** 2).sum()) if not np.isnan(base).any() else np.nan,
+                "p_actual": float(probs[actual]),
+            })
+    return pd.DataFrame(rows)
+
+
+def backtest_summary(bt: pd.DataFrame) -> dict:
+    """Taux de bons pronostics, score de Brier (vs référence naïve) et points de calibration."""
+    if bt.empty:
+        return {}
+    # (probabilité annoncée, l'issue s'est-elle produite ?) pour chacune des 3 issues de chaque match
+    pairs = pd.concat([
+        pd.DataFrame({"p": bt[f"{outcome} %"] / 100, "hit": bt["Résultat"] == outcome})
+        for outcome in OUTCOMES
+    ], ignore_index=True)
+    pairs["bin"] = pd.cut(pairs["p"], bins=[0, 0.2, 0.4, 0.6, 0.8, 1.0], include_lowest=True)
+    calib = pairs.groupby("bin", observed=True).agg(predicted=("p", "mean"), observed=("hit", "mean"),
+                                                    n=("hit", "size")).reset_index(drop=True)
+    return {
+        "n": len(bt), "accuracy": float(bt["Correct"].mean()),
+        "brier": float(bt["brier"].mean()), "brier_base": float(bt["brier_base"].mean()),
+        "calibration": calib,
+    }
 
 
 def team_form(tm: pd.DataFrame, team: str, window: int = 5) -> pd.DataFrame:

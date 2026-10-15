@@ -1,9 +1,11 @@
 """Matchs de la saison (Understat et Sofascore), classement xG, pronostics, secours Understat."""
 import numpy as np
+import pandas as pd
 import pytest
 
-from footapp.analysis import (expected_points, outcome_probabilities, predict_match, score_matrix, team_form,
-                              venue_split, xg_table)
+from footapp.analysis import (backtest, backtest_summary, expected_points, outcome_probabilities, percentiles,
+                              predict_match, score_matrix, team_form, venue_split, xg_table)
+from footapp.config import ALL_TEAM_METRICS, TEAM_LOWER_IS_BETTER, TEAM_RADAR
 from footapp.data import link_team_ids
 from footapp.updates import is_newer
 
@@ -73,6 +75,33 @@ def test_pronostic(data, meta):
     assert predict_match(tm, best, "Équipe inconnue") is None
 
 
+def test_bilan_des_pronostics(data, meta):
+    tm = data.team_matches(meta["ut"], meta["sid"])
+    bt = backtest(tm)
+    assert not bt.empty
+    assert np.allclose(bt[["1 %", "N %", "2 %"]].sum(axis=1), 100)
+    assert bt["brier"].between(0, 2).all()
+    summary = backtest_summary(bt)
+    assert summary["n"] == len(bt) and 0 <= summary["accuracy"] <= 1
+    assert summary["calibration"]["n"].sum() == 3 * len(bt)
+
+
+def test_bilan_sans_connaitre_l_avenir(data, meta):
+    """Changer les résultats des derniers matchs ne doit pas modifier les pronostics des matchs antérieurs."""
+    tm = data.team_matches(meta["ut"], meta["sid"])
+    last_day = tm["date"].dt.normalize().max()
+    altered = tm.copy()
+    future = altered["date"].dt.normalize() == last_day
+    altered.loc[future, ["xg", "xga", "gf", "ga"]] = [5.0, 0.0, 9, 0]
+    before = backtest(tm)
+    after = backtest(altered)
+    earlier = before["date"].dt.normalize() < last_day
+    assert earlier.any()
+    pd.testing.assert_frame_equal(before.loc[earlier, ["1 %", "N %", "2 %"]].reset_index(drop=True),
+                                  after.loc[after["date"].dt.normalize() < last_day,
+                                            ["1 %", "N %", "2 %"]].reset_index(drop=True))
+
+
 def test_prochains_matchs(data, meta):
     events = data.upcoming_events(meta["ut"], meta["sid"])
     assert events and all(e["status"] == "notstarted" for e in events)
@@ -86,6 +115,18 @@ def test_secours_understat(data_offline_sofascore, meta):
     standings = data_offline_sofascore.standings(meta["ut"], meta["sid"])
     assert standings.attrs.get("source") == "Understat"
     assert standings["Pos"].tolist() == list(range(1, len(standings) + 1))
+
+
+def test_radar_equipes(data, meta):
+    assert set(TEAM_RADAR) <= set(ALL_TEAM_METRICS)
+    standings = data.standings(meta["ut"], meta["sid"])
+    teams = standings[["Équipe", "team_id"]].rename(columns={"Équipe": "name"}).head(2)
+    df = data.team_season_stats(meta["ut"], meta["sid"], teams)
+    pct = percentiles(df, TEAM_RADAR, TEAM_LOWER_IS_BETTER)
+    # buts encaissés : l'équipe qui en encaisse le moins a le meilleur centile
+    best_defence = df["goalsConceded"].idxmin()
+    if df["goalsConceded"].nunique() > 1:
+        assert pct.at[best_defence, "goalsConceded"] == pct["goalsConceded"].max()
 
 
 def test_comparaison_de_versions():

@@ -13,6 +13,7 @@ from .palette import CommandPalette
 from .pages.compare import ComparePage
 from .pages.dashboard import DashboardPage
 from .pages.help import HelpPage
+from .pages.indices import IndicesPage
 from .pages.matches import MatchesPage
 from .pages.players import PlayersPage
 from .pages.predictions import PredictionsPage
@@ -26,13 +27,14 @@ from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
 # Organisation de la navigation : (titre de section, [classes de pages])
 NAVIGATION = [
     ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage, PredictionsPage]),
-    ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage]),
+    ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage, IndicesPage]),
     ("ÉQUIPES", [TeamsPage]),
     ("", [HelpPage]),
 ]
 NAV_LABELS = {"dashboard": "Tableau de bord", "standings": "Classement", "matches": "Matchs",
               "predictions": "Pronostics", "players": "Statistiques joueurs", "profile": "Fiche joueur",
-              "compare": "Comparaison", "scouting": "Recherche avancée", "teams": "Équipes",
+              "compare": "Comparaison", "scouting": "Recherche avancée", "indices": "Indices personnalisés",
+              "teams": "Équipes",
               "help": "Aide && paramètres"}
 
 
@@ -226,7 +228,7 @@ class MainWindow(QMainWindow):
     def _on_release(self, release):
         if release and updates.is_newer(release["version"], APP_VERSION):
             self.banner.show_message(f"Nouvelle version {release['version']} disponible : "
-                                     f"<a href='{release['url']}'>télécharger sur GitHub</a>")
+                                     f"<a href='{release['url']}'>télécharger sur GitHub</a>", rich=True)
 
     def _on_busy(self, n):
         self.busy.setVisible(n > 0)

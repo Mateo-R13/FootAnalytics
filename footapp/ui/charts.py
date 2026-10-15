@@ -17,8 +17,9 @@ def _num(v, decimals=2) -> str:
 def _title(ax, text, sub=None):
     ax.set_title(text, loc="left", fontsize=11, fontweight="bold", color=theme.INK, pad=24 if sub else 6)
     if sub:
-        ax.annotate(sub, (0, 1), xycoords="axes fraction", xytext=(0, 8), textcoords="offset points",
-                    fontsize=8.5, color=theme.MUTED, va="bottom")
+        note = ax.annotate(sub, (0, 1), xycoords="axes fraction", xytext=(0, 8), textcoords="offset points",
+                           fontsize=8.5, color=theme.MUTED, va="bottom")
+        note.set_in_layout(False)  # un sous-titre long ne doit pas rétrécir le graphique
 
 
 def _pitch(**kw):
@@ -92,7 +93,9 @@ def scatter(chart: ChartWidget, df: pd.DataFrame, x: str, y: str, name_col: str,
 def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, list]], title, subtitle):
     """players : [(nom, percentiles 0-100, valeurs brutes)] - 2 joueurs max."""
     fig = chart.clear()
-    ax = fig.add_subplot(projection="polar")
+    # placement manuel : titre, sous-titre et légende au-dessus, radar en dessous sans chevauchement
+    fig.set_layout_engine("none")
+    ax = fig.add_axes([0.15, 0.09, 0.70, 0.68], projection="polar")
     n = len(params)
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
     ax.set_theta_offset(np.pi / 2)
@@ -114,9 +117,9 @@ def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, 
         chart.add_hover(ax, pts, [f"{name}\n{p} : {_num(v)} (centile {c:.0f})"
                                   for p, v, c in zip(params, raw, pct)])
         handles.append(Line2D([], [], color=color, lw=2, marker="o", label=name))
-    ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1.3, 1.15), fontsize=9)
-    fig.suptitle(title, x=0.02, ha="left", fontsize=11, fontweight="bold", color=theme.INK)
-    fig.text(0.02, 0.92, subtitle, fontsize=8.5, color=theme.MUTED)
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.02, 0.905), ncol=len(handles), fontsize=9)
+    fig.text(0.02, 0.965, title, fontsize=11, fontweight="bold", color=theme.INK, va="top")
+    fig.text(0.02, 0.925, subtitle, fontsize=8.5, color=theme.MUTED, va="top")
     chart.draw()
 
 
@@ -382,6 +385,30 @@ def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
     fig.text(0.01, 0.005, f"Modèle de Poisson sur les {pred['basis']} de la saison (forces attaque/défense, "
                           "avantage du terrain) - indicatif, ne tient compte ni des absences ni de la forme récente.",
              fontsize=7.5, color=theme.MUTED)
+    chart.draw()
+
+
+def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: str):
+    """Probabilité annoncée vs fréquence observée : un modèle bien calibré suit la diagonale."""
+    fig = chart.clear()
+    if calib is None or calib.empty:
+        return chart.message("Pas assez de matchs pour évaluer le modèle")
+    ax = fig.add_subplot()
+    ax.plot([0, 100], [0, 100], color=theme.MUTED, lw=1, ls=":")
+    ax.text(97, 92, "calibration parfaite", ha="right", fontsize=8, color=theme.MUTED, rotation=38)
+    x, y = calib["predicted"] * 100, calib["observed"] * 100
+    ax.plot(x, y, color=theme.HOME, lw=2)
+    pts = ax.scatter(x, y, s=30 + calib["n"] / calib["n"].max() * 400, color=theme.HOME,
+                     edgecolor=theme.SURFACE, linewidth=2, zorder=3)
+    chart.add_hover(ax, pts, [f"Annoncé : {p:.0f} % en moyenne\nObservé : {o:.0f} %\n{n} issues"
+                              for p, o, n in zip(x, y, calib["n"])])
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("Probabilité annoncée par le modèle (%)")
+    ax.set_ylabel("Fréquence réellement observée (%)")
+    ax.grid(True)
+    ax.set_axisbelow(True)
+    _title(ax, title, subtitle)
     chart.draw()
 
 

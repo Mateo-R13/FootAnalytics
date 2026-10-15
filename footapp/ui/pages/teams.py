@@ -2,8 +2,8 @@ import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QSplitter, QTabWidget
 
-from ...analysis import team_form, venue_split
-from ...config import ALL_TEAM_METRICS, TEAM_CATEGORIES
+from ...analysis import percentiles, team_form, venue_split
+from ...config import ALL_TEAM_METRICS, TEAM_CATEGORIES, TEAM_LOWER_IS_BETTER, TEAM_RADAR
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card, tool_button
 from . import Page
@@ -82,9 +82,27 @@ class TeamsPage(Page):
         self.venue_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         venue_card = table_card(self.venue_table, "Bilan domicile / extérieur", "moyennes par match")
 
+        # comparaison de deux équipes (radar en centiles, valeurs par match)
+        self.team_a, self.team_b = QComboBox(), QComboBox()
+        for box in (self.team_a, self.team_b):
+            box.setMinimumWidth(220)
+        self.compare_chart = ChartWidget()
+        self.compare_table = DataTable()
+        cmp_card = chart_card(self.compare_chart)
+        cb = QHBoxLayout()
+        for w in (QLabel("Équipe 1"), self.team_a, QLabel("Équipe 2"), self.team_b):
+            cb.addWidget(w)
+        cb.addStretch()
+        cmp_card.body.insertLayout(0, cb)
+        compare = QSplitter(Qt.Horizontal)
+        compare.addWidget(cmp_card)
+        compare.addWidget(table_card(self.compare_table, "Détail", "valeurs par match et centiles"))
+        compare.setSizes([680, 460])
+
         tabs = QTabWidget()
         tabs.addTab(bar_card, "Classement par métrique")
         tabs.addTab(sc_card, "Nuage X / Y")
+        tabs.addTab(compare, "Comparer deux équipes")
         tabs.addTab(form_card, "Forme d'une équipe")
         tabs.addTab(venue_card, "Domicile / extérieur")
         self.chart_tabs, self._match_tabs = tabs, (form_card, venue_card)
@@ -99,6 +117,8 @@ class TeamsPage(Page):
         self.per_match.toggled.connect(self.refresh)
         for box in (self.category, self.metric_box, self.x_metric, self.y_metric):
             box.currentIndexChanged.connect(self.refresh)
+        self.team_a.currentIndexChanged.connect(self._compare)
+        self.team_b.currentIndexChanged.connect(self._compare)
         self.form_team.currentIndexChanged.connect(self._show_form)
         self.form_window.valueChanged.connect(self._show_form)
         state.context_changed.connect(self._on_context)
@@ -134,6 +154,41 @@ class TeamsPage(Page):
         self.venue_table.set_dataframe(venue)
         self._select_wanted_team()
         self._show_form()
+
+    def _fill_compare_combos(self):
+        teams = self.df.sort_values("team")["team"].tolist() if not self.df.empty else []
+        for i, box in enumerate((self.team_a, self.team_b)):
+            current = box.currentText()
+            box.blockSignals(True)
+            box.clear()
+            box.addItems(teams)
+            idx = box.findText(current)
+            box.setCurrentIndex(idx if idx >= 0 else min(i, len(teams) - 1))
+            box.blockSignals(False)
+        self._compare()
+
+    def _compare(self):
+        a, b = self.team_a.currentText(), self.team_b.currentText()
+        if self.df.empty or not a or not b:
+            return
+        df = self.df.copy()
+        for k, (_, _, kind) in ALL_TEAM_METRICS.items():  # radar toujours en valeurs par match
+            if kind == "count":
+                df[k] = df[k] / df["matches"].where(df["matches"] > 0)
+        df = df.reset_index(drop=True)
+        pct = percentiles(df, TEAM_RADAR, TEAM_LOWER_IS_BETTER)
+        params = [ALL_TEAM_METRICS[k][0] for k in TEAM_RADAR]
+        series, table = [], {"Métrique": params}
+        for name in dict.fromkeys((a, b)):
+            i = df.index[df["team"] == name][0]
+            raw, cent = df.loc[i, TEAM_RADAR].tolist(), pct.loc[i, TEAM_RADAR].fillna(0).tolist()
+            series.append((name, cent, raw))
+            table[name] = [round(v, 2) if pd.notna(v) else None for v in raw]
+            table[f"{name} · centile"] = [round(c) for c in cent]
+        charts.radar(self.compare_chart, params, series, "Profils d'équipes comparés",
+                     f"Centiles parmi les {len(df)} équipes · {self.ctx.label} · par match · "
+                     "métriques défensives inversées (haut = mieux)")
+        self.compare_table.set_dataframe(pd.DataFrame(table))
 
     def show_team(self, name: str):
         """Ouvre l'onglet « Forme » sur l'équipe `name` (nom Sofascore du classement)."""
@@ -171,7 +226,11 @@ class TeamsPage(Page):
         if ctx is None or standings.empty or self._loaded_for == (ctx, len(standings)):
             return
         self._loaded_for = (ctx, len(standings))
-        teams = standings[["Équipe", "team_id"]].drop_duplicates("team_id").rename(columns={"Équipe": "name"})
+        if standings["team_id"].isna().all():  # classement de secours (Understat) : pas d'identifiants Sofascore
+            return self.bar_chart.message("Statistiques d'équipes indisponibles : Sofascore ne répond pas "
+                                          "(les onglets Forme et Domicile / extérieur restent disponibles)")
+        teams = standings[["Équipe", "team_id"]].dropna(subset=["team_id"]).drop_duplicates("team_id") \
+            .rename(columns={"Équipe": "name"})
         self.bar_chart.message("Chargement des statistiques d'équipes…")
         self.scatter_chart.message("Chargement…")
         self.state.runner.run("teams", lambda progress: self.state.data.team_season_stats(ctx.ut, ctx.sid, teams, progress),
@@ -180,6 +239,7 @@ class TeamsPage(Page):
     def _on_loaded(self, df):
         self.df = df
         self.refresh()
+        self._fill_compare_combos()
 
     def view(self) -> pd.DataFrame:
         df = self.df.copy()

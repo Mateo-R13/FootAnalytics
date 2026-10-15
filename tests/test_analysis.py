@@ -3,8 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from footapp.analysis import per90, percentiles, rank_in, scout, similar_players
-from footapp.config import ALL_PLAYER_METRICS, POSITION_TEMPLATES
+from footapp.analysis import composite_index, per90, percentiles, rank_in, scout, similar_players
+from footapp.config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITION_TEMPLATES
 
 
 def players(n=5):
@@ -63,6 +63,22 @@ def test_recherche_multicriteres():
     assert set(found["player_id"]) == {1, 3, 4}
     assert found["score"].is_monotonic_decreasing
     assert scout(df, [("goals", 101)]).empty
+
+
+def test_indice_personnalise():
+    df = players().assign(pos="F")
+    ranked = composite_index(df, [("goals", 3), ("accuratePassesPercentage", 1)])
+    assert ranked["index"].between(0, 100).all()
+    assert ranked["index"].is_monotonic_decreasing
+    assert ranked.iloc[0]["player_id"] == 4  # meilleur sur les deux métriques
+    # poids nul ou métrique absente : ignorés
+    assert composite_index(df, [("goals", 0)]).empty
+
+
+def test_indices_proposes_valides():
+    for name, components in INDEX_PRESETS.items():
+        unknown = [k for k, _ in components if k not in ALL_PLAYER_METRICS]
+        assert not unknown, f"{name} : métriques inconnues {unknown}"
 
 
 def test_gabarits_de_poste_valides():

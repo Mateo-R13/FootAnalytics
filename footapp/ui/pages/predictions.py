@@ -1,10 +1,10 @@
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSplitter
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
-from ...analysis import predict_match
-from .. import charts
-from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card
+from ...analysis import backtest, backtest_summary, predict_match
+from .. import charts, theme
+from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, table_card
 from . import Page
 
 
@@ -43,12 +43,40 @@ class PredictionsPage(Page):
         splitter.addWidget(chart_card(self.chart))
         left.setMinimumWidth(560)
         splitter.setSizes([640, 600])
-        self.body.addWidget(splitter, 1)
+
+        # fiabilité : le modèle rejoué sur les matchs déjà joués
+        self.k_matches = KpiTile("Matchs évalués", "#a855f7", "fa5s.list-ol")
+        self.k_accuracy = KpiTile("Bons pronostics", "#22c55e", "fa5s.check")
+        self.k_brier = KpiTile("Score de Brier", "#3b82f6", "fa5s.bullseye")
+        self.k_verdict = KpiTile("Verdict", "#f5b301", "fa5s.balance-scale")
+        self.k_verdict.value.setStyleSheet("font-size: 12pt;")
+        self.k_verdict.value.setWordWrap(True)
+        kpis = QHBoxLayout()
+        for k in (self.k_matches, self.k_accuracy, self.k_brier, self.k_verdict):
+            kpis.addWidget(k)
+        self.calib_chart = ChartWidget()
+        self.bt_table = DataTable()
+        self.bt_table.model_.set_color("Correct", lambda v: theme.GOOD_TEXT if v == "Oui" else theme.BAD_TEXT)
+        reliability = QSplitter(Qt.Horizontal)
+        reliability.addWidget(chart_card(self.calib_chart))
+        reliability.addWidget(table_card(self.bt_table, "Matchs rejoués", "le modèle ne connaît que le passé"))
+        reliability.setSizes([560, 680])
+        rel_page = QWidget()
+        rl = QVBoxLayout(rel_page)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(10)
+        rl.addLayout(kpis)
+        rl.addWidget(reliability, 1)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(splitter, "Prochains matchs")
+        self.tabs.addTab(rel_page, "Fiabilité du modèle")
+        self.body.addWidget(self.tabs, 1)
 
         self.home.currentIndexChanged.connect(self._simulate)
         self.away.currentIndexChanged.connect(self._simulate)
         state.context_changed.connect(self._on_context)
-        state.team_matches_changed.connect(lambda tm: self._refresh())
+        state.team_matches_changed.connect(lambda tm: (self._refresh(), self._run_backtest(tm)))
 
     def _on_context(self, ctx):
         self.upcoming = []
@@ -70,6 +98,49 @@ class PredictionsPage(Page):
         self.state.request_team_matches()
         self.state.runner.run("upcoming", lambda progress: self.state.data.upcoming_events(ctx.ut, ctx.sid),
                               self._on_upcoming)
+
+    def _run_backtest(self, tm):
+        """Rejoue le modèle en arrière-plan (quelques secondes sur une saison complète)."""
+        ctx = self.ctx
+        self.calib_chart.message("Évaluation du modèle sur les matchs joués…")
+
+        def job(progress):
+            bt = backtest(tm)
+            return bt, backtest_summary(bt)
+
+        self.state.runner.run("backtest", job, lambda result: self._on_backtest(result, ctx))
+
+    def _on_backtest(self, result, ctx):
+        bt, summary = result
+        if ctx != self.ctx:
+            return
+        if not summary:
+            for k in (self.k_matches, self.k_accuracy, self.k_brier, self.k_verdict):
+                k.set("-")
+            self.bt_table.set_dataframe(pd.DataFrame())
+            return self.calib_chart.message("Pas encore assez de matchs joués pour évaluer le modèle "
+                                            "(3 matchs par équipe minimum)")
+        n, acc, brier, base = summary["n"], summary["accuracy"], summary["brier"], summary["brier_base"]
+        self.k_matches.set(str(n), f"{ctx.label}")
+        self.k_accuracy.set(f"{acc:.0%}", "issue la plus probable = résultat réel (hasard : 33 %)")
+        gain = (base - brier) / base if base else 0
+        self.k_brier.set(f"{brier:.3f}", f"référence naïve : {base:.3f} (plus bas = mieux)")
+        if n < 60:
+            verdict = "Échantillon trop court : choisissez la saison précédente pour un bilan solide"
+        elif gain > 0.03:
+            verdict = f"Fiable : {gain:.0%} plus précis que la référence"
+        elif gain > 0:
+            verdict = "Légèrement meilleur que la référence"
+        else:
+            verdict = "Pas meilleur que la référence"
+        self.k_verdict.set(verdict)
+        charts.calibration(self.calib_chart, summary["calibration"], "Le modèle est-il bien calibré ?",
+                           "Annoncé ~50 % → arrivé ~50 % du temps ? · taille = nb d'issues")
+        view = bt.assign(Date=bt["date"].dt.strftime("%d/%m/%Y"), Correct=bt["Correct"].map({True: "Oui", False: "Non"}))
+        cols = ["Date", "Domicile", "Extérieur", "Score", "1 %", "N %", "2 %", "Pronostic", "Résultat", "Correct"]
+        view = view[cols].iloc[::-1].reset_index(drop=True)
+        view[["1 %", "N %", "2 %"]] = view[["1 %", "N %", "2 %"]].round(0)
+        self.bt_table.set_dataframe(view)
 
     def _on_upcoming(self, events):
         self.upcoming = events

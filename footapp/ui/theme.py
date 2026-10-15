@@ -45,6 +45,7 @@ ACCENTS = {
     "profile": "#06b6d4",
     "compare": "#ec4899",
     "scouting": "#14b8a6",
+    "indices": "#eab308",
     "teams": "#f97316",
     "help": "#94a3b8",
 }
@@ -92,6 +93,8 @@ def apply_matplotlib():
         "font.size": 9,
         "legend.frameon": False,
         "legend.labelcolor": INK2,
+        # un nom contenant « $ » ne doit pas être interprété comme une formule (sinon erreur de tracé)
+        "text.parse_math": False,
     })
 
 
