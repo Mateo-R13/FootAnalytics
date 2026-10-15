@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "FootAnalytics"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 GITHUB_REPO = "Mateo-R13/FootAnalytics"
 
 CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME / "cache"
