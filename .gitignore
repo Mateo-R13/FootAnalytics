@@ -1,0 +1,15 @@
+# Environnement & caches Python
+.venv/
+__pycache__/
+*.pyc
+
+# Sorties PyInstaller
+build/
+dist/
+*.spec
+build.log
+
+# Éditeurs / OS
+.vscode/
+.idea/
+Thumbs.db

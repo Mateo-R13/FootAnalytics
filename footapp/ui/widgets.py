@@ -1,0 +1,472 @@
+"""Briques réutilisables : cartes, graphiques, tableaux, images, tâches de fond."""
+import math
+from itertools import count
+
+import numpy as np
+import pandas as pd
+import qtawesome as qta
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.figure import Figure
+from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, QRunnable, QSize, QSortFilterProxyModel,
+                            Qt, QThreadPool, Signal, Slot)
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QHBoxLayout, QLabel, QMessageBox,
+                               QPushButton, QTableView, QVBoxLayout, QWidget)
+
+from . import theme
+
+
+def icon(name: str, color: str = theme.INK2):
+    return qta.icon(name, color=color)
+
+
+# --- conteneurs ------------------------------------------------------------
+class Card(QFrame):
+    """Panneau arrondi avec titre et aide optionnels."""
+
+    def __init__(self, title: str = "", hint: str = "", parent=None, margins=14):
+        super().__init__(parent)
+        self.setObjectName("Card")
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(margins, margins - 2, margins, margins)
+        self.body.setSpacing(8)
+        if title or hint:
+            head = QHBoxLayout()
+            if title:
+                head.addWidget(QLabel(title, objectName="CardTitle"))
+            head.addStretch()
+            if hint:
+                head.addWidget(QLabel(hint, objectName="CardHint"))
+            self.body.addLayout(head)
+
+    def add(self, widget, stretch=0):
+        self.body.addWidget(widget, stretch)
+        return widget
+
+
+class KpiTile(QFrame):
+    """Chiffre clé : libellé, valeur, sous-texte, liseré de couleur."""
+
+    def __init__(self, label: str, accent: str, icon_name: str = None):
+        super().__init__()
+        self.setObjectName("Card")
+        self.setStyleSheet(f"#Card {{ border-top: 3px solid {accent}; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 12)
+        lay.setSpacing(2)
+        top = QHBoxLayout()
+        if icon_name:
+            ic = QLabel()
+            ic.setPixmap(icon(icon_name, accent).pixmap(16, 16))
+            top.addWidget(ic)
+        top.addWidget(QLabel(label, objectName="KpiLabel"))
+        top.addStretch()
+        lay.addLayout(top)
+        self.value = QLabel("-", objectName="KpiValue")
+        self.sub = QLabel("", objectName="KpiSub")
+        lay.addWidget(self.value)
+        lay.addWidget(self.sub)
+
+    def set(self, value: str, sub: str = ""):
+        self.value.setText(value)
+        self.sub.setText(sub)
+
+
+class PageHeader(QWidget):
+    def __init__(self, title: str, subtitle: str, icon_name: str, accent: str):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setSpacing(14)
+        badge = QLabel()
+        badge.setFixedSize(46, 46)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setStyleSheet(f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {accent}, "
+                            f"stop:1 {theme.rgba(accent, 0.55)}); border-radius: 12px;")
+        badge.setPixmap(icon(icon_name, "#ffffff").pixmap(24, 24))
+        lay.addWidget(badge)
+        texts = QVBoxLayout()
+        texts.setSpacing(0)
+        texts.addWidget(QLabel(title, objectName="PageTitle"))
+        self.subtitle = QLabel(subtitle, objectName="PageSubtitle")
+        self.subtitle.setWordWrap(True)
+        texts.addWidget(self.subtitle)
+        lay.addLayout(texts, 1)
+        self.actions = QHBoxLayout()
+        lay.addLayout(self.actions)
+
+
+def tool_button(text: str, icon_name: str, tooltip: str = "") -> QPushButton:
+    b = QPushButton(icon(icon_name), f" {text}" if text else "")
+    b.setIconSize(QSize(14, 14))
+    b.setToolTip(tooltip)
+    b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
+# --- images (logos, photos) --------------------------------------------------
+def rounded_pixmap(pix: QPixmap, size: int, circle=False) -> QPixmap:
+    pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    if not circle:
+        return pix
+    out = QPixmap(size, size)
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.Antialiasing)
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+    p.setClipPath(path)
+    p.fillRect(0, 0, size, size, QColor(theme.CONTROL))
+    p.drawPixmap((size - pix.width()) // 2, (size - pix.height()) // 2, pix)
+    p.end()
+    return out
+
+
+class _ImgSignals(QObject):
+    done = Signal(str, bytes)
+
+
+class _ImgTask(QRunnable):
+    def __init__(self, key, path, client, signals):
+        super().__init__()
+        self.key, self.path, self.client, self.signals = key, path, client, signals
+
+    def run(self):
+        try:
+            data = self.client.get_image(self.path) or b""
+        except Exception:
+            data = b""
+        self.signals.done.emit(self.key, data)
+
+
+class ImageStore(QObject):
+    """Charge logos et photos en arrière-plan ; signale `loaded(clé)` quand une image arrive."""
+    loaded = Signal(str)
+    PATHS = {"team": "/team/{}/image", "player": "/player/{}/image", "tournament": "/unique-tournament/{}/image"}
+
+    def __init__(self, client, parent=None):
+        super().__init__(parent)
+        self.client = client
+        self._pix: dict[str, QPixmap | None] = {}
+        self._pending = set()
+        self._pool = QThreadPool()
+        self._pool.setMaxThreadCount(2)
+        self._signals = _ImgSignals()
+        self._signals.done.connect(self._on_done)
+
+    def get(self, kind: str, obj_id) -> QPixmap | None:
+        if obj_id is None or (isinstance(obj_id, float) and math.isnan(obj_id)):
+            return None
+        key = f"{kind}/{int(obj_id)}"
+        if key in self._pix:
+            return self._pix[key]
+        if key not in self._pending:
+            self._pending.add(key)
+            self._pool.start(_ImgTask(key, self.PATHS[kind].format(int(obj_id)), self.client, self._signals))
+        return None
+
+    @Slot(str, bytes)
+    def _on_done(self, key, data):
+        self._pending.discard(key)
+        pix = QPixmap()
+        self._pix[key] = pix if data and pix.loadFromData(data) else None
+        self.loaded.emit(key)
+
+
+# --- graphique -------------------------------------------------------------
+class ChartWidget(QWidget):
+    """Figure matplotlib + barre d'outils (zoom, export PNG) + infobulles au survol."""
+
+    def __init__(self, parent=None, toolbar=True):
+        super().__init__(parent)
+        self.figure = Figure(layout="constrained")
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas.setStyleSheet(f"background: {theme.CARD};")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        if toolbar:
+            bar = NavigationToolbar2QT(self.canvas, self)
+            bar.setIconSize(QSize(16, 16))
+            bar.setStyleSheet(f"QToolBar {{ background: transparent; border: none; }}"
+                              f"QToolButton {{ border-radius: 6px; padding: 3px; }}"
+                              f"QToolButton:hover {{ background: {theme.CONTROL}; }}"
+                              f"QLabel {{ color: {theme.MUTED}; font-size: 8.5pt; }}")
+            layout.addWidget(bar)
+        layout.addWidget(self.canvas)
+        self._hover_cids = []
+
+    def clear(self) -> Figure:
+        for cid in self._hover_cids:
+            self.canvas.mpl_disconnect(cid)
+        self._hover_cids.clear()
+        self.figure.clear()
+        return self.figure
+
+    def draw(self):
+        self.canvas.draw_idle()
+
+    def message(self, text: str):
+        fig = self.clear()
+        fig.text(0.5, 0.5, text, ha="center", va="center", color=theme.MUTED, fontsize=11)
+        self.draw()
+
+    def add_hover(self, ax, collection, labels: list[str]):
+        """Affiche labels[i] quand la souris survole le point i de `collection`."""
+        annot = ax.annotate(
+            "", xy=(0, 0), xytext=(12, 12), textcoords="offset points", fontsize=9, color=theme.INK,
+            bbox=dict(boxstyle="round,pad=0.5", fc=theme.CONTROL, ec=theme.BORDER), zorder=100,
+            annotation_clip=False)
+        annot.set_visible(False)
+
+        def on_move(event):
+            if event.inaxes is not ax:
+                if annot.get_visible():
+                    annot.set_visible(False)
+                    self.canvas.draw_idle()
+                return
+            hit, info = collection.contains(event)
+            if hit:
+                i = info["ind"][0]
+                annot.xy = collection.get_offsets()[i]
+                annot.set_text(labels[i])
+                x_frac = ax.transAxes.inverted().transform((event.x, event.y))[0]
+                right = x_frac > 0.6
+                annot.set_position((-12, 12) if right else (12, 12))
+                annot.set_horizontalalignment("right" if right else "left")
+                annot.set_visible(True)
+                self.canvas.draw_idle()
+            elif annot.get_visible():
+                annot.set_visible(False)
+                self.canvas.draw_idle()
+
+        self._hover_cids.append(self.canvas.mpl_connect("motion_notify_event", on_move))
+
+
+# --- tableau ---------------------------------------------------------------
+def _fmt(v) -> str:
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return ""
+    if isinstance(v, (float, np.floating)):
+        return f"{v:.0f}" if float(v).is_integer() else f"{v:.2f}"
+    return str(v)
+
+
+class DataFrameModel(QAbstractTableModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._df = pd.DataFrame()
+        self._icons = {}  # nom de colonne -> fonction(ligne) -> QPixmap | None
+        self._colors = {}  # nom de colonne -> fonction(valeur) -> couleur | None
+
+    def set_dataframe(self, df: pd.DataFrame):
+        self.beginResetModel()
+        self._df = df.reset_index(drop=True)
+        self.endResetModel()
+
+    def dataframe(self) -> pd.DataFrame:
+        return self._df
+
+    def set_icon(self, column: str, fn):
+        self._icons[column] = fn
+
+    def set_color(self, column: str, fn):
+        self._colors[column] = fn
+
+    def refresh_icons(self):
+        for c, name in enumerate(self._df.columns):
+            if name in self._icons and len(self._df):
+                self.dataChanged.emit(self.index(0, c), self.index(len(self._df) - 1, c), [Qt.DecorationRole])
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._df)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._df.columns)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        v = self._df.iat[index.row(), index.column()]
+        col = self._df.columns[index.column()]
+        if role == Qt.DisplayRole:
+            return _fmt(v)
+        if role == Qt.UserRole:  # valeur brute pour le tri
+            if isinstance(v, str):
+                return v
+            if v is None or pd.isna(v):
+                return float("-inf")
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                return float(v)
+            return str(v)
+        if role == Qt.DecorationRole and col in self._icons:
+            return self._icons[col](self._df.iloc[index.row()])
+        if role == Qt.ForegroundRole and col in self._colors:
+            c = self._colors[col](v)
+            return QColor(c) if c else None
+        if role == Qt.TextAlignmentRole:
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                return int(Qt.AlignRight | Qt.AlignVCenter)
+            return int(Qt.AlignLeft | Qt.AlignVCenter)
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return str(self._df.columns[section])
+        return str(section + 1)
+
+
+class DataTable(QTableView):
+    """Tableau triable (clic sur en-tête) alimenté par un DataFrame."""
+    row_activated = Signal(object)  # double-clic -> ligne (pd.Series)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.model_ = DataFrameModel(self)
+        self.proxy = QSortFilterProxyModel(self)
+        self.proxy.setSourceModel(self.model_)
+        self.proxy.setSortRole(Qt.UserRole)
+        self.setModel(self.proxy)
+        self.setSortingEnabled(True)
+        self.setAlternatingRowColors(True)
+        self.setShowGrid(False)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setIconSize(QSize(18, 18))
+        self.verticalHeader().setDefaultSectionSize(30)
+        self.verticalHeader().setVisible(False)
+        self.horizontalHeader().setHighlightSections(False)
+        self.horizontalHeader().setStretchLastSection(False)
+        self.doubleClicked.connect(self._on_double)
+
+    def _on_double(self, index):
+        src = self.proxy.mapToSource(index)
+        self.row_activated.emit(self.model_.dataframe().iloc[src.row()])
+
+    def set_dataframe(self, df: pd.DataFrame, hidden=("player_id", "team_id", "pos")):
+        header = self.horizontalHeader()
+        sort_col, sort_order = header.sortIndicatorSection(), header.sortIndicatorOrder()
+        old_cols = list(self.model_.dataframe().columns)
+        sort_name = old_cols[sort_col] if 0 <= sort_col < len(old_cols) else None
+
+        self.model_.set_dataframe(df)
+        for i, c in enumerate(df.columns):
+            self.setColumnHidden(i, c in hidden)
+        self.resizeColumnsToContents()
+        for i in range(len(df.columns)):
+            self.setColumnWidth(i, min(self.columnWidth(i) + 12, 240))
+        if sort_name in df.columns:
+            self.sortByColumn(list(df.columns).index(sort_name), sort_order)
+        else:
+            self.proxy.sort(-1)
+            header.setSortIndicator(-1, Qt.AscendingOrder)
+
+    def selected_record(self) -> pd.Series | None:
+        rows = self.selectionModel().selectedRows()
+        if not rows:
+            return None
+        src = self.proxy.mapToSource(rows[0])
+        return self.model_.dataframe().iloc[src.row()]
+
+    def visible_dataframe(self) -> pd.DataFrame:
+        """DataFrame dans l'ordre affiché (tri inclus), sans colonnes techniques."""
+        df = self.model_.dataframe()
+        order = [self.proxy.mapToSource(self.proxy.index(r, 0)).row() for r in range(self.proxy.rowCount())]
+        cols = [c for i, c in enumerate(df.columns) if not self.isColumnHidden(i)]
+        return df.iloc[order][cols]
+
+    def export(self, default_name="export"):
+        df = self.visible_dataframe()
+        if df.empty:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter", f"{default_name}.xlsx", "Excel (*.xlsx);;CSV (*.csv)")
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".csv"):
+                df.to_csv(path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+            else:
+                df.to_excel(path, index=False)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export", f"Échec de l'export :\n{exc}")
+
+
+def table_card(table: DataTable, title="", hint="") -> Card:
+    card = Card(title, hint, margins=6)
+    card.body.setContentsMargins(4, 4 if not (title or hint) else 8, 4, 4)
+    card.add(table, 1)
+    return card
+
+
+def chart_card(chart: ChartWidget, title="", hint="") -> Card:
+    card = Card(title, hint, margins=8)
+    card.add(chart, 1)
+    return card
+
+
+# --- tâches de fond --------------------------------------------------------
+class _Signals(QObject):
+    done = Signal(int, object)
+    failed = Signal(int, str)
+    progress = Signal(str)
+
+
+class _Task(QRunnable):
+    def __init__(self, task_id, fn, signals):
+        super().__init__()
+        self.task_id, self.fn, self.signals = task_id, fn, signals
+
+    def run(self):
+        try:
+            result = self.fn(self.signals.progress.emit)
+        except Exception as exc:
+            self.signals.failed.emit(self.task_id, f"{type(exc).__name__} : {exc}")
+        else:
+            self.signals.done.emit(self.task_id, result)
+
+
+class TaskRunner(QObject):
+    """Exécute des fonctions hors du thread de l'interface.
+
+    Pour un même `tag`, seul le résultat de la dernière demande est pris en
+    compte : changer vite de sélection n'affiche jamais un résultat périmé.
+    """
+    busy_changed = Signal(int)
+    progress = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pool = QThreadPool.globalInstance()
+        self._ids = count(1)
+        self._latest: dict[str, int] = {}
+        self._pending: dict[int, tuple] = {}
+
+    def run(self, tag: str, fn, on_done, on_error=None):
+        """fn(progress) est exécutée en arrière-plan ; on_done(result) dans le thread UI."""
+        task_id = next(self._ids)
+        self._latest[tag] = task_id
+        signals = _Signals()
+        signals.done.connect(self._on_done)
+        signals.failed.connect(self._on_failed)
+        signals.progress.connect(self.progress)
+        self._pending[task_id] = (tag, on_done, on_error, signals)
+        self.busy_changed.emit(len(self._pending))
+        self._pool.start(_Task(task_id, fn, signals))
+
+    @Slot(int, object)
+    def _on_done(self, task_id, result):
+        tag, on_done, _, _ = self._pending.pop(task_id)
+        self.busy_changed.emit(len(self._pending))
+        if self._latest.get(tag) == task_id:
+            on_done(result)
+
+    @Slot(int, str)
+    def _on_failed(self, task_id, message):
+        tag, _, on_error, _ = self._pending.pop(task_id)
+        self.busy_changed.emit(len(self._pending))
+        if self._latest.get(tag) == task_id:
+            (on_error or self.error.emit)(message)
