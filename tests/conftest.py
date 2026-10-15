@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from footapp.api.sofascore import ApiError
+from footapp.api.understat import UnderstatClient
 from footapp.data import FootData
 
 FIXTURE = Path(__file__).parent / "fixtures" / "api.json.gz"
@@ -28,6 +30,29 @@ class ReplayClient:
         return None
 
 
+class ReplayUnderstat:
+    """Remplace UnderstatClient (mêmes ligues prises en charge)."""
+
+    def __init__(self, responses: dict):
+        self.responses = responses
+
+    @staticmethod
+    def supports(ut):
+        return UnderstatClient.supports(ut)
+
+    def league_data(self, ut, season_start, ttl=0):
+        return self.responses[f"{ut}/{season_start}"]
+
+
+class FailingClient(ReplayClient):
+    """Sofascore indisponible : toute requête hors saisons échoue (pour tester le secours Understat)."""
+
+    def get(self, path, ttl=3600, permanent=False):
+        if path.endswith("/seasons"):
+            return super().get(path, ttl, permanent)
+        raise ApiError("Sofascore indisponible (test)")
+
+
 @pytest.fixture(scope="session")
 def recorded():
     with gzip.open(FIXTURE, "rt", encoding="utf-8") as f:
@@ -36,7 +61,18 @@ def recorded():
 
 @pytest.fixture
 def data(recorded):
+    return FootData(ReplayClient(recorded["responses"]), ReplayUnderstat(recorded["understat"]))
+
+
+@pytest.fixture
+def data_sofascore_only(recorded):
+    """Sans Understat : force le calcul des xG par match à partir de Sofascore."""
     return FootData(ReplayClient(recorded["responses"]))
+
+
+@pytest.fixture
+def data_offline_sofascore(recorded):
+    return FootData(FailingClient(recorded["responses"]), ReplayUnderstat(recorded["understat"]))
 
 
 @pytest.fixture(scope="session")

@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from footapp.analysis import per90, percentiles, rank_in, similar_players
+from footapp.analysis import per90, percentiles, rank_in, scout, similar_players
 from footapp.config import ALL_PLAYER_METRICS, POSITION_TEMPLATES
 
 
@@ -54,6 +54,15 @@ def test_profils_similaires():
 
 def test_profils_similaires_joueur_absent():
     assert similar_players(players(), 99, ["goals"]).empty
+
+
+def test_recherche_multicriteres():
+    df = players().assign(pos=["D", "D", "F", "F", "F"])
+    found = scout(df, [("goals", 60), ("accuratePassesPercentage", 60)])
+    # centiles calculés par poste : chez les attaquants (2, 3, 4), seuls 3 et 4 dépassent le 60e centile
+    assert set(found["player_id"]) == {1, 3, 4}
+    assert found["score"].is_monotonic_decreasing
+    assert scout(df, [("goals", 101)]).empty
 
 
 def test_gabarits_de_poste_valides():
