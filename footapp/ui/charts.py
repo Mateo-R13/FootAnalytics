@@ -4,7 +4,7 @@ import pandas as pd
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from . import theme
+from . import pitch, theme
 from .widgets import ChartWidget
 
 
@@ -22,10 +22,8 @@ def _title(ax, text, sub=None):
         note.set_in_layout(False)  # un sous-titre long ne doit pas rétrécir le graphique
 
 
-def _pitch(**kw):
-    from mplsoccer import Pitch  # import différé : ~2 s de chargement (scipy), inutile au démarrage
-    return Pitch(pitch_type="opta", pitch_color=theme.SURFACE, line_color=theme.PITCH_LINE,
-                 linewidth=1, goal_type="box", **kw)
+def _draw_pitch(ax, line_zorder: float = 0.9):
+    pitch.draw_pitch(ax, line_color=theme.PITCH_LINE, pitch_color=theme.SURFACE, line_zorder=line_zorder)
 
 
 # --- classements & nuages de points ---------------------------------------
@@ -45,7 +43,7 @@ def bar_ranking(chart: ChartWidget, labels, values, title, subtitle=None):
     ax.spines[["left", "bottom"]].set_visible(False)
     ax.tick_params(left=False, bottom=False)
     span = np.nanmax(np.abs(values)) or 1
-    for yi, v in zip(y, values):
+    for yi, v in zip(y, values, strict=True):
         ax.text(v + (0.01 * span if v >= 0 else -0.01 * span), yi, _num(v), va="center",
                 ha="left" if v >= 0 else "right", fontsize=8, color=theme.INK2)
     lo, hi = min(0, np.nanmin(values)), max(0, np.nanmax(values))
@@ -107,7 +105,7 @@ def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, 
     ax.grid(color=theme.GRID, lw=0.8)
     ax.spines["polar"].set_color(theme.AXIS)
     handles = []
-    for (name, pct, raw), color in zip(players, theme.SERIES):
+    for (name, pct, raw), color in zip(players, theme.SERIES, strict=False):  # au plus 2 joueurs pour 3 couleurs
         pct = np.nan_to_num(np.asarray(pct, dtype=float))
         closed = np.r_[pct, pct[:1]]
         ang = np.r_[angles, angles[:1]]
@@ -115,7 +113,7 @@ def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, 
         ax.fill(ang, closed, color=color, alpha=0.22)
         pts = ax.scatter(angles, pct, s=36, color=color, edgecolor=theme.SURFACE, linewidth=1.5, zorder=3)
         chart.add_hover(ax, pts, [f"{name}\n{p} : {_num(v)} (centile {c:.0f})"
-                                  for p, v, c in zip(params, raw, pct)])
+                                  for p, v, c in zip(params, raw, pct, strict=True)])
         handles.append(Line2D([], [], color=color, lw=2, marker="o", label=name))
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.02, 0.905), ncol=len(handles), fontsize=9)
     fig.text(0.02, 0.965, title, fontsize=11, fontweight="bold", color=theme.INK, va="top")
@@ -166,7 +164,7 @@ def percentile_bars(chart: ChartWidget, rows: pd.DataFrame, title: str, subtitle
     ax.barh(y, [100] * n, height=0.62, color=theme.GRID)
     ax.barh(y, pct, height=0.62, color=colors)
     ax.axvline(50, color=theme.AXIS, lw=1, ls="--")
-    for yi, p, v in zip(y, pct, rows["value"]):
+    for yi, p, v in zip(y, pct, rows["value"], strict=True):
         ax.text(102, yi, f"{p:.0f}e", va="center", fontsize=8.5, color=theme.INK, weight="bold")
         ax.text(113, yi, v, va="center", fontsize=8.5, color=theme.INK2)
     ax.set_yticks(y, rows["label"], fontsize=8.5)
@@ -197,7 +195,7 @@ def rating_timeline(chart: ChartWidget, matches: pd.DataFrame, title: str):
     mean = ratings.mean()
     ax.axhline(mean, color=theme.AXIS, lw=1, ls="--")
     ax.text(len(x) - 0.5, mean, f" moyenne {mean:.2f}", va="bottom", ha="right", fontsize=8, color=theme.MUTED)
-    for xi, r, row in zip(x, ratings, played.itertuples()):
+    for xi, r, row in zip(x, ratings, played.itertuples(), strict=True):
         tags = " ".join(filter(None, [f"{row.Buts} but" if row.Buts else "", f"{row.PD} PD" if row.PD else ""]))
         if tags:
             ax.annotate(tags, (xi, r), xytext=(0, 9), textcoords="offset points", ha="center",
@@ -230,8 +228,9 @@ def career(chart: ChartWidget, df: pd.DataFrame, title: str):
         ax.plot(x, y, color=color, lw=2)
         pts = ax.scatter(x, y, s=50, color=color, edgecolor=theme.SURFACE, linewidth=2, zorder=3)
         chart.add_hover(ax, pts, [f"{r['Saison']} · {r['Compétition']} ({r['Équipe']})\n{label} : {_num(v)}"
-                                  f"\n{r['Matchs']} matchs · {r['Minutes']} min · {r['Buts']} buts · {r['Passes déc.']} PD"
-                                  for (_, r), v in zip(d.iterrows(), y)])
+                                  f"\n{r['Matchs']} matchs · {r['Minutes']} min · {r['Buts']} buts"
+                                  f" · {r['Passes déc.']} PD"
+                                  for (_, r), v in zip(d.iterrows(), y, strict=True)])
         handles.append(Line2D([], [], color=color, lw=2, marker="o", label=label))
     ax.set_xticks(x, [f"{r['Saison']}\n{r['Compétition'][:16]}" for _, r in d.iterrows()], fontsize=7.5)
     ax.set_ylim(bottom=0)
@@ -260,7 +259,7 @@ def cumulative_xg(chart: ChartWidget, shots: pd.DataFrame, home: str, away: str)
             pts = ax.scatter(goals["t"], cum, s=70, color=color, edgecolor=theme.SURFACE, linewidth=2, zorder=3)
             chart.add_hover(ax, pts, [f"But de {r.player} ({r.minute}')\nxG du tir : {r.xg:.2f}"
                                       for r in goals.itertuples()])
-            for r, y in zip(goals.itertuples(), cum):
+            for r, y in zip(goals.itertuples(), cum, strict=True):
                 ax.annotate(r.player.split()[-1], (r.t, y), xytext=(0, 8), textcoords="offset points",
                             ha="center", fontsize=8, color=theme.INK)
     ax.axvline(45, color=theme.AXIS, lw=1, ls=":")
@@ -287,7 +286,7 @@ def diverging_bars(chart: ChartWidget, labels, values, title: str, subtitle: str
     ax.barh(y, values, height=0.66, color=[theme.DIV_HIGH if v >= 0 else theme.DIV_LOW for v in values])
     ax.axvline(0, color=theme.AXIS, lw=1)
     span = np.nanmax(np.abs(values)) or 1
-    for yi, v in zip(y, values):
+    for yi, v in zip(y, values, strict=True):
         ax.text(v + (0.02 if v >= 0 else -0.02) * span, yi, f"{v:+.1f}", va="center",
                 ha="left" if v >= 0 else "right", fontsize=8, color=theme.INK2)
     ax.set_yticks(y, labels, fontsize=8.5)
@@ -319,9 +318,9 @@ def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
         else:
             ax.plot(x, form[raw], color=color, lw=2, label=label)
         chart.add_hover(ax, pts, [f"{r.date:%d/%m} {r.venue} vs {r.opponent} : {r.gf}-{r.ga}\n{label} : {_num(v)}"
-                                  for r, v in zip(form.itertuples(), form[raw])])
+                                  for r, v in zip(form.itertuples(), form[raw], strict=True)])
     top = np.nanmax(form[[c[0] for c in cols]].to_numpy(dtype=float)) * 1.25 + 0.2
-    for xi, r in zip(x, form.itertuples()):
+    for xi, r in zip(x, form.itertuples(), strict=True):
         ax.text(xi, top, r.result, ha="center", va="center", fontsize=8.5, color=theme.INK, weight="bold")
     ax.set_xticks(x, [f"{r.opponent[:10]}\n{r.venue}" for r in form.itertuples()], fontsize=7.5)
     ax.set_ylim(0, top * 1.08)
@@ -374,7 +373,7 @@ def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
     scores = pred["top_scores"]
     y = np.arange(len(scores))
     ax3.barh(y, [p * 100 for _, p in scores], color=theme.HOME, height=0.6)
-    for yi, (s, p) in zip(y, scores):
+    for yi, (_score, p) in zip(y, scores, strict=True):
         ax3.text(p * 100 + 0.3, yi, f"{p:.0%}", va="center", fontsize=8.5, color=theme.INK2)
     ax3.set_yticks(y, [s for s, _ in scores])
     ax3.invert_yaxis()
@@ -401,7 +400,7 @@ def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: s
     pts = ax.scatter(x, y, s=30 + calib["n"] / calib["n"].max() * 400, color=theme.HOME,
                      edgecolor=theme.SURFACE, linewidth=2, zorder=3)
     chart.add_hover(ax, pts, [f"Annoncé : {p:.0f} % en moyenne\nObservé : {o:.0f} %\n{n} issues"
-                              for p, o, n in zip(x, y, calib["n"])])
+                              for p, o, n in zip(x, y, calib["n"], strict=True)])
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 100)
     ax.set_xlabel("Probabilité annoncée par le modèle (%)")
@@ -425,7 +424,7 @@ def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, hom
         return chart.message("Pas de carte des tirs pour ce match")
     gs = fig.add_gridspec(2, 1, height_ratios=[3, 1.1])
     ax = fig.add_subplot(gs[0])
-    _pitch().draw(ax=ax)
+    _draw_pitch(ax)
     summary = []
     for is_home, color, team in ((True, theme.HOME, home), (False, theme.AWAY, away)):
         d = shots[shots["is_home"] == is_home]
@@ -442,9 +441,10 @@ def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, hom
                 f"{r.player} - {r.minute}'" + (f"+{int(r.added)}" if pd.notna(r.added) and r.added else "")
                 + f"\n{_shot_label(r.type)} · xG {r.xg:.2f}\n{r.situation or ''} · {r.body or ''}"
                 for r in subset.itertuples()])
+    marker = {"marker": "o", "ls": "", "markersize": 9}
     ax.legend(handles=[
-        Line2D([], [], marker="o", ls="", markersize=9, markerfacecolor=theme.INK2, markeredgecolor=theme.SURFACE, label="But"),
-        Line2D([], [], marker="o", ls="", markersize=9, markerfacecolor="none", markeredgecolor=theme.INK2, label="Tir non marqué"),
+        Line2D([], [], **marker, markerfacecolor=theme.INK2, markeredgecolor=theme.SURFACE, label="But"),
+        Line2D([], [], **marker, markerfacecolor="none", markeredgecolor=theme.INK2, label="Tir non marqué"),
         Patch(color=theme.HOME, label=home), Patch(color=theme.AWAY, label=away),
     ], loc="upper center", bbox_to_anchor=(0.5, 0.02), ncol=4, fontsize=8.5)
     ax.set_title("     |     ".join(summary), fontsize=9.5, color=theme.INK)
@@ -477,14 +477,10 @@ def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str):
     if points.empty:
         return chart.message("Pas de heatmap disponible pour ce joueur")
     ax = fig.add_subplot()
-    pitch = _pitch(line_zorder=2)
-    pitch.draw(ax=ax)
-    stats = pitch.bin_statistic(points["x"], 100 - points["y"], statistic="count", bins=(30, 20))
-    from scipy.ndimage import gaussian_filter
-    stats["statistic"] = gaussian_filter(stats["statistic"], 1.2)
-    pitch.heatmap(stats, ax=ax, cmap=theme.SEQ_CMAP, zorder=1)
+    _draw_pitch(ax, line_zorder=2)  # lignes au-dessus de la densité
+    pitch.heatmap(ax, points["x"], 100 - points["y"], cmap=theme.SEQ_CMAP, zorder=1)
     ax.annotate("", xy=(62, -4), xytext=(38, -4), annotation_clip=False,
-                arrowprops=dict(arrowstyle="->", color=theme.MUTED, lw=1))
+                arrowprops={"arrowstyle": "->", "color": theme.MUTED, "lw": 1})
     ax.text(50, -8, "Sens du jeu", ha="center", fontsize=8, color=theme.MUTED)
     _title(ax, title, f"{len(points)} actions localisées")
     chart.draw()
@@ -496,7 +492,7 @@ def average_positions(chart: ChartWidget, positions: dict, home: str, away: str)
         return chart.message("Positions moyennes indisponibles")
     for i, (side, team, color) in enumerate((("home", home, theme.HOME), ("away", away, theme.AWAY))):
         ax = fig.add_subplot(1, 2, i + 1)
-        _pitch().draw(ax=ax)
+        _draw_pitch(ax)
         df = positions.get(side, pd.DataFrame())
         if df.empty:
             continue
