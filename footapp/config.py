@@ -4,10 +4,12 @@ import sys
 from pathlib import Path
 
 APP_NAME = "FootAnalytics"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 GITHUB_REPO = "Mateo-R13/FootAnalytics"
 
-CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME / "cache"
+DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+CACHE_DIR = DATA_DIR / "cache"
+LOG_DIR = DATA_DIR / "logs"
 
 
 def resource_path(relative: str) -> Path:

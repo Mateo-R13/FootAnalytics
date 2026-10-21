@@ -54,7 +54,7 @@ Aucune installation de Python nécessaire.
 ### Depuis les sources
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock   # versions exactes
 .\.venv\Scripts\python.exe main.py
 ```
 
@@ -65,21 +65,37 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 #    dist\FootAnalytics-Setup-<version>.exe (si Inno Setup 6 est installé : winget install JRSoftware.InnoSetup)
 ```
 Le workflow GitHub Actions (`.github/workflows/build.yml`) le fait automatiquement à chaque push sur `main` ;
-pousser un tag `v*` (ex. `git tag v2.2.0 && git push --tags`) publie l'installeur et le zip dans une Release.
+pousser un tag `v*` (ex. `git tag v2.4.0 && git push --tags`) publie l'installeur et le zip dans une Release.
 L'icône se régénère avec `python tools\make_icon.py`.
 
-## Tests
+## Développement
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest -q                 # hors ligne, sur des réponses API enregistrées
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt   # dépendances + outils (versions figées)
+.\.venv\Scripts\python.exe -m ruff check .              # qualité du code (configuration : pyproject.toml)
+.\.venv\Scripts\python.exe -m pytest -q                 # tests hors ligne, interface comprise
 $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # contre la vraie API
 .\.venv\Scripts\python.exe -m tests.record_fixtures      # ré-enregistrer les réponses de référence
 ```
 
-Les tests vérifient notamment que chaque métrique demandée à l'API est toujours renseignée :
-si Sofascore renomme un champ, le test échoue et indique lequel. Ils tournent à chaque push (GitHub Actions)
-avant la construction de l'exe.
+- **Dépendances** : `requirements.txt` liste les dépendances directes ; `requirements.lock` fige toutes les
+  versions (directes et indirectes) pour des builds reproductibles. Pour les mettre à jour : environnement
+  vierge, `pip install -r requirements.txt`, puis `pip freeze > requirements.lock`.
+- **Tests** : réponses API réelles enregistrées (aucun réseau). Ils vérifient que chaque métrique demandée est
+  toujours renseignée (si Sofascore renomme un champ, le test indique lequel), que le modèle de pronostic ne
+  « connaît » pas l'avenir, et que chaque page de l'interface s'ouvre sans erreur (Qt sans fenêtre visible).
+- **Intégration continue** (GitHub Actions) : ruff, pip-audit, tests, puis construction de l'installeur ;
+  sur un tag, vérification que le tag correspond à la version de l'application avant publication.
+- **Journal** : `%LOCALAPPDATA%\FootAnalytics\logs\footanalytics.log` (erreurs avec leur trace complète),
+  accessible depuis Aide & paramètres.
+
+## Performances
+
+- Pages construites à leur première ouverture ; une page cachée ne recalcule rien (mises à jour différées).
+- Données affichées immédiatement depuis le cache (même expiré), puis rafraîchies en arrière-plan.
+- Écran de chargement affiché avant le chargement des bibliothèques ; modules lourds (PDF) chargés à la demande.
+- Application allégée de moitié (~140 Mo installée) : terrain de football dessiné sans mplsoccer ni scipy,
+  composants Qt inutilisés retirés du build.
 
 ## Sécurité
 
@@ -112,16 +128,19 @@ footapp/
   data.py                     appels API -> DataFrames pandas (+ métriques dérivées)
   analysis.py                 par 90 min, centiles, profils similaires, recherche, Poisson (xPts, pronostics)
   updates.py                  vérification des Releases GitHub
+  logs.py                     journal (fichier tournant, erreurs non gérées)
   ui/
     main_window.py            fenêtre : navigation latérale + barre de contexte
-    state.py                  état partagé (compétition, classement, joueurs)
+    state.py                  état partagé, chargement « cache d'abord »
+    settings.py               paramètres utilisateur
     theme.py                  couleurs, feuille de style Qt, style matplotlib
     widgets.py                cartes, tuiles, tableaux, graphiques, images, tâches de fond
-    charts.py                 tous les graphiques (matplotlib / mplsoccer)
+    charts.py                 tous les graphiques (matplotlib)
+    pitch.py                  terrain de football et heatmaps lissées
     report.py                 rapports PDF
     palette.py                recherche globale Ctrl+K
     pages/                    une page par section
-tests/                        tests pytest + réponses API enregistrées (fixtures/api.json.gz)
+tests/                        tests pytest (données, analyse, interface, sécurité) + réponses API enregistrées
 ```
 
 **Ajouter une compétition** : `(nom, id)` dans `COMPETITIONS` (l'id figure dans l'URL Sofascore du tournoi).
