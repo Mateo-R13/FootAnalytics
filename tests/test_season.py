@@ -3,8 +3,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from footapp.analysis import (backtest, backtest_summary, expected_points, outcome_probabilities, percentiles,
-                              predict_match, score_matrix, team_form, venue_split, xg_table)
+from footapp.analysis import (
+    backtest,
+    backtest_summary,
+    expected_points,
+    outcome_probabilities,
+    percentiles,
+    predict_match,
+    score_matrix,
+    team_form,
+    venue_split,
+    xg_table,
+)
 from footapp.config import ALL_TEAM_METRICS, TEAM_LOWER_IS_BETTER, TEAM_RADAR
 from footapp.data import link_team_ids
 from footapp.updates import is_newer

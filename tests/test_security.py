@@ -61,6 +61,6 @@ def test_ancien_cache_vide_purge(tmp_path):
 
 def test_ecriture_atomique(tmp_path):
     target = tmp_path / "f.json"
-    sofascore._write_atomic(target, b'{"ok": 1}')
+    sofascore.write_atomic(target, b'{"ok": 1}')
     assert json.loads(target.read_text("utf-8")) == {"ok": 1}
     assert not list(tmp_path.glob("*.tmp"))

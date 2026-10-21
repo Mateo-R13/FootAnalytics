@@ -1,6 +1,7 @@
 """Fixtures pytest : un faux client qui rejoue les réponses API enregistrées (aucun accès réseau)."""
 import gzip
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,24 @@ class ReplayClient:
 
     def get_image(self, path, ttl=0):
         return None
+
+
+class LenientReplayClient(ReplayClient):
+    """Tests d'interface : une ressource non enregistrée est traitée comme absente (404), ce qui vérifie
+    au passage que l'interface supporte les données manquantes."""
+
+    def get(self, path, ttl=3600, permanent=False):
+        self.requested.append(path)
+        return self.responses.get(path)
+
+    def cache_size_mb(self):
+        return 0.0
+
+    def clear_temporary_cache(self):
+        pass
+
+    def clear_all_cache(self):
+        pass
 
 
 class ReplayUnderstat:
@@ -73,6 +92,27 @@ def data_sofascore_only(recorded):
 @pytest.fixture
 def data_offline_sofascore(recorded):
     return FootData(FailingClient(recorded["responses"]), ReplayUnderstat(recorded["understat"]))
+
+
+@pytest.fixture
+def ui_data(recorded):
+    return FootData(LenientReplayClient(recorded["responses"]), ReplayUnderstat(recorded["understat"]))
+
+
+@pytest.fixture(scope="session")
+def qapp(tmp_path_factory):
+    """Application Qt sans fenêtre visible, avec des paramètres isolés (jamais ceux de l'utilisateur)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ["FOOTAPP_SETTINGS"] = str(tmp_path_factory.mktemp("parametres") / "settings.ini")
+    from PySide6.QtWidgets import QApplication
+
+    from footapp.ui import theme
+
+    app = QApplication.instance() or QApplication([])
+    theme.configure("dark")
+    theme.apply_qt(app)
+    theme.apply_matplotlib()
+    return app
 
 
 @pytest.fixture(scope="session")

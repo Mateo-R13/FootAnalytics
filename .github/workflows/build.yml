@@ -27,14 +27,26 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Installer les dépendances
+      - name: Installer les dépendances (versions exactes)
         run: pip install -r requirements-dev.txt
 
-      - name: Vérifier les failles connues des dépendances
-        run: pip-audit -r requirements.txt
+      - name: Vérifier la qualité du code (ruff)
+        run: ruff check .
 
-      - name: Lancer les tests (réponses API enregistrées, sans réseau)
+      - name: Vérifier les failles connues des dépendances
+        run: pip-audit -r requirements.lock
+
+      - name: Vérifier que la version de l'application correspond au tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(python -c "from footapp.config import APP_VERSION; print(APP_VERSION)")
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "Tag ${GITHUB_REF_NAME} ≠ version v$version"; exit 1; }
+
+      - name: Lancer les tests (données enregistrées, sans réseau, interface comprise)
         run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
 
       - name: Vérifier que l'interface s'importe
         run: python -c "import footapp.ui.main_window"

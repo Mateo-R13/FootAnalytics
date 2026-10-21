@@ -2,8 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from footapp.config import (ALL_PLAYER_METRICS, ALL_TEAM_METRICS, LINEUP_BASE, LINEUP_GROUPS, PLAYER_METRICS,
-                            POSITIONS)
+from footapp.config import ALL_PLAYER_METRICS, ALL_TEAM_METRICS, LINEUP_BASE, LINEUP_GROUPS, PLAYER_METRICS, POSITIONS
 from footapp.data import _season_start
 
 
