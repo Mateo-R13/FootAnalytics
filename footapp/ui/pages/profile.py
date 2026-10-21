@@ -1,13 +1,25 @@
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QCompleter, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
-                               QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QCompleter,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...analysis import per90, percentiles, rank_in, similar_players
 from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
 from .. import charts, report
 from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, rounded_pixmap, table_card, tool_button
-from . import Page
+from . import Page, scope_combo
 
 
 def player_combo() -> QComboBox:
@@ -43,12 +55,15 @@ def fmt(v, decimals=2) -> str:
 class ProfilePage(Page):
     key = "profile"
     title = "Fiche joueur"
-    subtitle = "Identité, profil en centiles par rapport aux joueurs du même poste, forme match par match et stats complètes"
+    subtitle = ("Identité, profil en centiles par rapport aux joueurs du même poste, forme match par match "
+                "et stats complètes")
     icon_name = "fa5s.id-card"
 
     def __init__(self, state):
         super().__init__(state)
         self.player_id = None
+        self._requested = None  # joueur demandé pendant que la page était cachée
+        self._shown = None      # (données, joueur) actuellement affichés
         self._facts = []
 
         self.follow_btn = tool_button("Suivre", "fa5s.star", "Ajouter / retirer de la liste de suivi (tableau de bord)")
@@ -126,9 +141,7 @@ class ProfilePage(Page):
         self.similar_table.selectionModel().selectionChanged.connect(self._show_similar_radar)
         self.similar_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         self.similar_radar = ChartWidget()
-        self.similar_scope = QComboBox()
-        self.similar_scope.addItem("Dans la compétition actuelle", "league")
-        self.similar_scope.addItem("Dans les 5 grands championnats", "big5")
+        self.similar_scope = scope_combo("Dans la compétition actuelle", "Dans les 5 grands championnats")
         similar_card = table_card(self.similar_table, "Joueurs au profil le plus proche",
                                   "clic : radar · double-clic : fiche")
         similar_card.body.insertWidget(1, self.similar_scope)
@@ -168,11 +181,11 @@ class ProfilePage(Page):
         self.body.addLayout(content, 1)
 
         self.similar_scope.currentIndexChanged.connect(self._on_similar_scope)
-        state.big5_changed.connect(lambda df: self._fill_similar() if self.similar_scope.currentData() == "big5" else None)
+        self.bind("big5", lambda df: self._fill_similar() if self.similar_scope.currentData() == "big5" else None)
         self.picker.currentIndexChanged.connect(self._on_pick)
         self.min_minutes.valueChanged.connect(self.refresh)
-        state.players_changed.connect(self._on_players)
-        state.context_changed.connect(lambda ctx: self.pct_chart.message("Chargement…"))
+        self.bind("context", lambda ctx: self.pct_chart.message("Chargement…"))
+        self.bind("players", self._on_players)
         state.images.loaded.connect(self._refresh_images)
         state.images.loaded.connect(lambda *_: self.similar_table.model_.refresh_icons())
 
@@ -186,10 +199,27 @@ class ProfilePage(Page):
             self.player_id = int(outfield.sort_values("rating", ascending=False).iloc[0].player_id)
         self.show_player(self.player_id)
 
+    def request_player(self, pid: int):
+        """Demande d'affichage d'un joueur (recherche, double-clic) : tout de suite si la page est visible,
+        sinon à son ouverture, une fois les données appliquées."""
+        self.player_id = int(pid)
+        if self.isVisible() and not self.state.players.empty:
+            self.show_player(pid)
+        else:
+            self._requested = int(pid)
+
+    def showEvent(self, event):
+        super().showEvent(event)  # applique d'abord les données en attente
+        requested, self._requested = self._requested, None
+        if requested is not None and not self.state.players.empty:
+            self.show_player(requested)
+
     def show_player(self, pid: int):
         idx = self.picker.findData(int(pid))
         if idx < 0:
             return
+        if self._shown == (id(self.state.players), int(pid)) and self.picker.currentIndex() == idx:
+            return  # déjà affiché avec ces données : pas de recalcul ni de requêtes en double
         if self.picker.currentIndex() == idx:
             self.player_id = int(pid)
             self.refresh()
@@ -214,6 +244,7 @@ class ProfilePage(Page):
         if p is None:
             return
         ctx, pid = self.ctx, int(p.player_id)
+        self._shown = (id(self.state.players), pid)
         self._update_follow()
         self.name.setText(p.player)
         self.team_name.setText(p.team)
@@ -278,10 +309,7 @@ class ProfilePage(Page):
         self.all_table.set_dataframe(pd.DataFrame(rows))
 
     def _on_similar_scope(self):
-        if self.similar_scope.currentData() == "big5" and self.state.big5 is None:
-            self.similar_radar.message("Chargement des 5 grands championnats… (environ 40 requêtes la première fois)")
-            self.state.request_big5()
-        else:
+        if not self.needs_big5(self.similar_scope.currentData(), self.similar_radar.message):
             self._fill_similar()
 
     def _fill_similar(self):
@@ -377,7 +405,8 @@ class ProfilePage(Page):
 
     def _on_info(self, info):
         self._facts = [("Poste", info["position"]), ("Âge", f"{info['age']} ans" if info["age"] else "-"),
-                       ("Nationalité", info["country"] or "-"), ("Taille", f"{info['height']} cm" if info["height"] else "-"),
+                       ("Nationalité", info["country"] or "-"),
+                       ("Taille", f"{info['height']} cm" if info["height"] else "-"),
                        ("Pied fort", info["foot"]), ("Valeur estimée", info["value"]), ("Contrat", info["contract"])]
         while self.facts.count():
             w = self.facts.takeAt(0).widget()

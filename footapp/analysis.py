@@ -125,7 +125,9 @@ def xg_table(tm: pd.DataFrame) -> pd.DataFrame:
     if tm.empty:
         return pd.DataFrame()
     g = tm.groupby("team")
-    total = lambda col: g[col].sum(min_count=1)  # NaN (et non 0) si la donnée manque
+    def total(col):
+        return g[col].sum(min_count=1)  # NaN (et non 0) si la donnée manque
+
     t = pd.DataFrame({
         "J": g.size(), "Pts": g["pts"].sum(), "xPts": total("xpts"),
         "BP": g["gf"].sum(), "BC": g["ga"].sum(), "xG": total("xg"), "xGA": total("xga"),

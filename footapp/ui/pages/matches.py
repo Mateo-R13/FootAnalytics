@@ -3,8 +3,19 @@ from datetime import datetime
 import pandas as pd
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                               QMessageBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...config import LINEUP_BASE, LINEUP_GROUPS, MATCH_PERIODS, MATCH_STAT_GROUPS, MATCH_STAT_LABELS, MATCH_STATUS
 from .. import charts, report, theme
@@ -145,7 +156,7 @@ class MatchesPage(Page):
         self.lineup_team.currentIndexChanged.connect(self._show_lineups)
         self.lineup_group.currentIndexChanged.connect(self._show_lineups)
         self.lineup_table.selectionModel().selectionChanged.connect(self._load_heatmap)
-        state.context_changed.connect(self.set_context)
+        self.bind("context", self.set_context)
         state.images.loaded.connect(self._refresh_logos)
 
     # --- journées ------------------------------------------------------------
@@ -256,7 +267,9 @@ class MatchesPage(Page):
         self.bundle = bundle
         e = bundle["event"]
         f = bundle["formations"]
-        extra = f" · systèmes : {f.get('home') or '?'} / {f.get('away') or '?'}" if f.get("home") or f.get("away") else ""
+        extra = ""
+        if f.get("home") or f.get("away"):
+            extra = f" · systèmes : {f.get('home') or '?'} / {f.get('away') or '?'}"
         if e["status"] == "inprogress":
             extra += f"   ● EN DIRECT · actualisé à {datetime.now():%H:%M:%S}"
             self.live_timer.start()
@@ -286,7 +299,10 @@ class MatchesPage(Page):
         if not path:
             return
         shots = self.bundle["shots"]
-        xg = lambda home: f"{shots.loc[shots['is_home'] == home, 'xg'].sum():.2f}" if not shots.empty else "-"
+
+        def xg(home: bool) -> str:
+            return f"{shots.loc[shots['is_home'] == home, 'xg'].sum():.2f}" if not shots.empty else "-"
+
         kpis = [(e["home"], str(e["home_score"])), (e["away"], str(e["away_score"])),
                 (f"xG {e['home']}", xg(True)), (f"xG {e['away']}", xg(False))]
         f = self.bundle["formations"]

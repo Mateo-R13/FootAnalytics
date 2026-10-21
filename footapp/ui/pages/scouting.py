@@ -1,13 +1,22 @@
 import json
 
 import pandas as pd
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...analysis import per90, scout
 from ...config import ALL_PLAYER_METRICS, POSITIONS
 from ..widgets import Card, DataTable, icon, table_card, tool_button
-from . import Page
+from . import Page, scope_combo
 from .players import metric_combo
 
 MAX_CRITERIA = 8
@@ -51,9 +60,7 @@ class ScoutingPage(Page):
         export.clicked.connect(lambda: self.table.export("recherche"))
         self.header.actions.addWidget(export)
 
-        self.scope = QComboBox()
-        self.scope.addItem("Compétition actuelle", "league")
-        self.scope.addItem("5 grands championnats", "big5")
+        self.scope = scope_combo()
         self.position = QComboBox()
         self.position.addItem("Joueurs de champ", "outfield")
         self.position.addItem("Tous les postes", None)
@@ -103,8 +110,8 @@ class ScoutingPage(Page):
         self.saved.activated.connect(self._apply_saved)
         save.clicked.connect(self._save)
         delete.clicked.connect(self._delete)
-        state.players_changed.connect(lambda df: self.run())
-        state.big5_changed.connect(lambda df: self.run())
+        self.bind("players", lambda df: self.run())
+        self.bind("big5", lambda df: self.run())
 
     # --- critères ------------------------------------------------------------------
     def _add_row(self, key="keyPasses", threshold=70):
@@ -132,9 +139,7 @@ class ScoutingPage(Page):
 
     # --- recherche -----------------------------------------------------------------
     def _on_scope(self):
-        if self.scope.currentData() == "big5" and self.state.big5 is None:
-            self.status.setText("Chargement des 5 grands championnats… (environ 40 requêtes la première fois)")
-            self.state.request_big5()
+        self.needs_big5(self.scope.currentData(), self.status.setText)
         self.run()
 
     def run(self):
@@ -205,7 +210,8 @@ class ScoutingPage(Page):
 
     def _delete(self):
         name = self.saved.currentData()
-        if not name or QMessageBox.question(self, "Supprimer", f"Supprimer la recherche « {name} » ?") != QMessageBox.Yes:
+        question = f"Supprimer la recherche « {name} » ?"
+        if not name or QMessageBox.question(self, "Supprimer", question) != QMessageBox.Yes:
             return
         searches = self._searches()
         searches.pop(name, None)

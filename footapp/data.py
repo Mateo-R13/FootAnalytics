@@ -1,12 +1,14 @@
 """Accès aux données : appels API -> DataFrames pandas prêts à analyser."""
+from contextlib import ExitStack, contextmanager
 from datetime import date, datetime
+from functools import partial
 
 import numpy as np
 import pandas as pd
 
+from .analysis import expected_points
 from .api.sofascore import ApiError, SofascoreClient
 from .api.understat import UnderstatClient
-from .analysis import expected_points
 from .config import PENALTY_XG, PLAYER_METRICS, POSITIONS, TEAM_EXTRA_FIELDS, TEAM_METRICS
 
 HOUR = 3600
@@ -60,6 +62,39 @@ def link_team_ids(names, standings: pd.DataFrame) -> dict:
     return links
 
 
+def _stat(stats: dict, key: str) -> float:
+    """Valeur d'une statistique Sofascore (0 si absente)."""
+    return stats.get(key) or 0
+
+
+def _stat_rounded(stats: dict, key: str, digits: int = 2) -> float:
+    return round(float(_stat(stats, key)), digits)
+
+
+def _stat_per90(stats: dict, minutes: float, key: str) -> float | None:
+    if not minutes or stats.get(key) is None:
+        return None
+    return round(stats[key] / minutes * 90, 2)
+
+
+def _side_value(stats: pd.DataFrame, key: str, side: str) -> float:
+    """Valeur numérique d'une statistique de match pour un camp (« home » / « away »), NaN si absente."""
+    if key not in stats.index or pd.isna(stats.at[key, f"{side}_value"]):
+        return np.nan
+    return float(stats.at[key, f"{side}_value"])
+
+
+def _person(value) -> str:
+    """Nom d'un joueur dans un incident : selon les cas, Sofascore envoie un texte ou un objet {name: …}."""
+    if isinstance(value, dict):
+        return value.get("name", "")
+    return value if isinstance(value, str) else ""
+
+
+def _as_float(values: dict, key: str) -> float:
+    return float(values.get(key) or 0)
+
+
 def _ratio(num, den, scale=1.0):
     num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -70,6 +105,15 @@ class FootData:
     def __init__(self, client: SofascoreClient, understat: UnderstatClient | None = None):
         self.client = client
         self.understat = understat
+
+    @contextmanager
+    def cache_first(self):
+        """Toutes les sources lisent leur cache même expiré dans ce bloc (affichage immédiat)."""
+        with ExitStack() as stack:
+            for source in (self.client, self.understat):
+                if hasattr(source, "cache_first"):
+                    stack.enter_context(source.cache_first())
+            yield
 
     # --- compétition / saison --------------------------------------------
     def seasons(self, ut: int) -> list[dict]:
@@ -172,7 +216,8 @@ class FootData:
         df["goalsMinusXg"] = df["goals"] - df["expectedGoals"]
         df["shotOnTargetPct"] = _ratio(df["shotsOnTarget"], df["totalShots"], 100)
         df["xgPerShot"] = _ratio(df["expectedGoals"], df["totalShots"])
-        df["defensiveActions"] = df[["tackles", "interceptions", "clearances", "outfielderBlocks"]].fillna(0).sum(axis=1)
+        defensive = ["tackles", "interceptions", "clearances", "outfielderBlocks"]
+        df["defensiveActions"] = df[defensive].fillna(0).sum(axis=1)
         df["savePct"] = np.where(df["pos"] == "G",
                                  _ratio(df["saves"], df["saves"].fillna(0) + df["goalsConceded"].fillna(0), 100),
                                  np.nan)
@@ -268,7 +313,7 @@ class FootData:
             if not s.get("appearances"):
                 continue
             minutes = s.get("minutesPlayed") or 0
-            per90 = lambda k: round(s[k] / minutes * 90, 2) if minutes and s.get(k) is not None else None
+            per90 = partial(_stat_per90, s, minutes)
             rows.append({
                 "Saison": year, "Compétition": comp, "Équipe": (d.get("team") or {}).get("name", ""),
                 "Matchs": s.get("appearances"), "Titularisations": s.get("matchesStarted"), "Minutes": minutes,
@@ -335,7 +380,10 @@ class FootData:
         eid = event["id"]
         finished = event["status"] == "finished"
         ttl = 45 if event["status"] == "inprogress" else 120
-        get = lambda p: self.client.get(f"/event/{eid}{p}", ttl=ttl, permanent=finished)
+
+        def get(resource: str):
+            return self.client.get(f"/event/{eid}{resource}", ttl=ttl, permanent=finished)
+
         lineups_raw = get("/lineups") or {}
         return {
             "event": event,
@@ -378,8 +426,8 @@ class FootData:
                 s = p.get("statistics") or {}
                 if not s.get("minutesPlayed"):
                     continue
-                g = lambda k: s.get(k) or 0
-                r1 = lambda k, n=2: round(float(g(k)), n)
+                g = partial(_stat, s)
+                r1 = partial(_stat_rounded, s)
                 rows.append({
                     "Équipe": team,
                     "Joueur": p["player"]["name"],
@@ -390,7 +438,8 @@ class FootData:
                     "Note": s.get("rating"),
                     # attaque
                     "Buts": g("goals"), "xG": r1("expectedGoals"), "xGOT": r1("expectedGoalsOnTarget"),
-                    "Tirs": g("totalShots") or g("onTargetScoringAttempt") + g("shotOffTarget") + g("blockedScoringAttempt"),
+                    "Tirs": g("totalShots")
+                    or g("onTargetScoringAttempt") + g("shotOffTarget") + g("blockedScoringAttempt"),
                     "Tirs cadrés": g("onTargetScoringAttempt"), "Tirs non cadrés": g("shotOffTarget"),
                     "Tirs contrés (subis)": g("blockedScoringAttempt"), "Grosses occas. ratées": g("bigChanceMissed"),
                     "Poteaux": g("hitWoodwork"), "Hors-jeu": g("totalOffside"), "Penalties obtenus": g("penaltyWon"),
@@ -469,25 +518,25 @@ class FootData:
             kind = i.get("incidentType")
             if kind not in ("goal", "card", "substitution", "varDecision"):
                 continue
-            minute = f"{i.get('time')}'" + (f"+{i['addedTime']}" if i.get("addedTime") and i["addedTime"] < 99 else "")
+            added = i.get("addedTime")
+            minute = f"{i.get('time')}'" + (f"+{added}" if added and added < 99 else "")
             team = event["home"] if i.get("isHome") else event["away"]
             cls = i.get("incidentClass", "")
             if kind == "goal":
                 label = {"penalty": "But (penalty)", "ownGoal": "But contre son camp"}.get(cls, "But")
-                who = i.get("player", "") if isinstance(i.get("player"), str) else (i.get("player") or {}).get("name", "")
-                assist = (i.get("assist1") or {}).get("name", "") if isinstance(i.get("assist1"), dict) else ""
+                who = _person(i.get("player"))
+                assist = _person(i.get("assist1"))
                 detail = f"{i.get('homeScore')} - {i.get('awayScore')}" + (f" · passe : {assist}" if assist else "")
             elif kind == "card":
                 label = {"yellow": "Carton jaune", "red": "Carton rouge", "yellowRed": "2e jaune"}.get(cls, "Carton")
-                who = i.get("playerName") or (i.get("player") or {}).get("name", "")
+                who = i.get("playerName") or _person(i.get("player"))
                 detail = i.get("reason", "")
             elif kind == "substitution":
                 label = "Remplacement" + (" (blessure)" if i.get("injury") else "")
-                who = (i.get("playerIn") or {}).get("name", "") if isinstance(i.get("playerIn"), dict) else i.get("playerIn", "")
-                out = (i.get("playerOut") or {}).get("name", "") if isinstance(i.get("playerOut"), dict) else i.get("playerOut", "")
-                detail = f"remplace {out}"
+                who = _person(i.get("playerIn"))
+                detail = f"remplace {_person(i.get('playerOut'))}"
             else:
-                label, who, detail = "VAR", (i.get("player") or {}).get("name", "") if isinstance(i.get("player"), dict) else "", cls
+                label, who, detail = "VAR", _person(i.get("player")), cls
             rows.append({"Minute": minute, "Équipe": team, "Évènement": label, "Joueur": who, "Détail": detail,
                          "_t": i.get("time", 0) * 100 + min(i.get("addedTime") or 0, 99)})
         df = pd.DataFrame(rows)
@@ -539,7 +588,7 @@ class FootData:
         df["result"] = np.select([df["gf"] > df["ga"], df["gf"] == df["ga"]], ["V", "N"], "D")
         df["pts"] = df["result"].map({"V": 3, "N": 1, "D": 0})
         if df["xpts"].isna().all() and df["xg"].notna().any():
-            df["xpts"] = [expected_points(x, y) for x, y in zip(df["xg"], df["xga"])]
+            df["xpts"] = [expected_points(x, y) for x, y in zip(df["xg"], df["xga"], strict=True)]
         return df
 
     @staticmethod
@@ -585,9 +634,9 @@ class FootData:
                 progress(f"xG des matchs : {i + 1}/{len(events)}")
             stats = self._match_stats(self.client.get(f"/event/{e['id']}/statistics", permanent=True))
             full = stats[stats["period"] == "ALL"].set_index("key") if not stats.empty else pd.DataFrame()
-            val = lambda key, side: float(full.at[key, f"{side}_value"]) if key in full.index and \
-                pd.notna(full.at[key, f"{side}_value"]) else np.nan
-            for side, other, team, opp in (("home", "away", e["home"], e["away"]), ("away", "home", e["away"], e["home"])):
+            val = partial(_side_value, full)
+            sides = (("home", "away", e["home"], e["away"]), ("away", "home", e["away"], e["home"]))
+            for side, other, team, opp in sides:
                 rows.append({
                     "date": e["date"], "team": team, "opponent": opp, "venue": "Dom." if side == "home" else "Ext.",
                     "gf": e[f"{side}_score"], "ga": e[f"{other}_score"],
@@ -619,10 +668,10 @@ class FootData:
             return None
         rows = []
         for p in data.get("players", []):
-            num = lambda k: float(p.get(k) or 0)
+            num = partial(_as_float, p)
             positions = [x for x in str(p.get("position", "")).split() if x != "S"]
             pos = {"GK": "G", "D": "D", "M": "M", "F": "F"}.get(positions[0] if positions else "M", "M")
-            row = {k: np.nan for k in PLAYER_METRICS}
+            row = dict.fromkeys(PLAYER_METRICS, np.nan)
             row.update({
                 "appearances": num("games"), "minutesPlayed": num("time"), "goals": num("goals"),
                 "expectedGoals": num("xG"), "assists": num("assists"), "expectedAssists": num("xA"),

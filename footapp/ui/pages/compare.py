@@ -6,7 +6,7 @@ from ...analysis import per90, percentiles
 from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card
-from . import Page
+from . import Page, scope_combo
 from .players import metric_combo
 from .profile import fill_player_combo, player_combo
 
@@ -22,9 +22,7 @@ class ComparePage(Page):
         self.p1 = player_combo()
         self.p2 = player_combo()
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=270, suffix=" min")
-        self.scope = QComboBox()
-        self.scope.addItem("Compétition actuelle", "league")
-        self.scope.addItem("5 grands championnats", "big5")
+        self.scope = scope_combo()
         self.scope.setToolTip("Référentiel des joueurs comparables (centiles, nuage de points)")
         top = Card(margins=10)
         row = QHBoxLayout()
@@ -71,19 +69,16 @@ class ComparePage(Page):
         self.sc_per90.toggled.connect(self.refresh_scatter)
         self.min_minutes.valueChanged.connect(self.refresh)
         self.scope.currentIndexChanged.connect(self._on_scope)
-        state.context_changed.connect(self._on_context)
-        state.players_changed.connect(lambda df: self._on_players(df) if self.scope.currentData() == "league" else None)
-        state.big5_changed.connect(lambda df: self._on_players(df) if self.scope.currentData() == "big5" else None)
+        self.bind("context", self._on_context)
+        self.bind("players", lambda df: self._on_players(df) if self.scope.currentData() == "league" else None)
+        self.bind("big5", lambda df: self._on_players(df) if self.scope.currentData() == "big5" else None)
 
     def _pool(self) -> pd.DataFrame:
         pool = self.state.players_pool(self.scope.currentData())
         return pool if pool is not None else pd.DataFrame()
 
     def _on_scope(self):
-        if self.scope.currentData() == "big5" and self.state.big5 is None:
-            self.radar_chart.message("Chargement des 5 grands championnats… (environ 40 requêtes la première fois)")
-            self.state.request_big5()
-        else:
+        if not self.needs_big5(self.scope.currentData(), self.radar_chart.message):
             self._on_players(self._pool())
 
     def _on_context(self, ctx):

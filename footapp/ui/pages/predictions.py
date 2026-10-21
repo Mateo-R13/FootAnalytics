@@ -75,8 +75,8 @@ class PredictionsPage(Page):
 
         self.home.currentIndexChanged.connect(self._simulate)
         self.away.currentIndexChanged.connect(self._simulate)
-        state.context_changed.connect(self._on_context)
-        state.team_matches_changed.connect(lambda tm: (self._refresh(), self._run_backtest(tm)))
+        self.bind("context", self._on_context)
+        self.bind("team_matches", lambda tm: (self._refresh(), self._run_backtest(tm)))
 
     def _on_context(self, ctx):
         self.upcoming = []
@@ -136,7 +136,8 @@ class PredictionsPage(Page):
         self.k_verdict.set(verdict)
         charts.calibration(self.calib_chart, summary["calibration"], "Le modèle est-il bien calibré ?",
                            "Annoncé ~50 % → arrivé ~50 % du temps ? · taille = nb d'issues")
-        view = bt.assign(Date=bt["date"].dt.strftime("%d/%m/%Y"), Correct=bt["Correct"].map({True: "Oui", False: "Non"}))
+        view = bt.assign(Date=bt["date"].dt.strftime("%d/%m/%Y"),
+                         Correct=bt["Correct"].map({True: "Oui", False: "Non"}))
         cols = ["Date", "Domicile", "Extérieur", "Score", "1 %", "N %", "2 %", "Pronostic", "Résultat", "Correct"]
         view = view[cols].iloc[::-1].reset_index(drop=True)
         view[["1 %", "N %", "2 %"]] = view[["1 %", "N %", "2 %"]].round(0)

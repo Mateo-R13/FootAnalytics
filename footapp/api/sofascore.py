@@ -6,20 +6,25 @@ pour limiter le nombre de requêtes (et éviter d'être bloqué).
 """
 import hashlib
 import json
+import logging
 import os
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import ClassVar
 
 from curl_cffi import requests
+
+log = logging.getLogger("footapp.api")
 
 
 class ApiError(RuntimeError):
     pass
 
 
-def _write_atomic(file: Path, content: bytes):
+def write_atomic(file: Path, content: bytes):
     """Écrit dans un fichier temporaire puis le renomme : un arrêt brutal ne laisse jamais de fichier tronqué."""
     tmp = file.with_name(f"{file.name}.{threading.get_ident()}.tmp")
     try:
@@ -31,12 +36,12 @@ def _write_atomic(file: Path, content: bytes):
 
 class SofascoreClient:
     BASE_URL = "https://www.sofascore.com/api/v1"
-    HEADERS = {
+    HEADERS: ClassVar[dict[str, str]] = {
         "Referer": "https://www.sofascore.com/",
         "Accept": "application/json, text/plain, */*",
     }
     # Empreintes navigateur essayées dans l'ordre en cas de blocage (403)
-    FINGERPRINTS = ("chrome", "safari", "chrome131", "edge")
+    FINGERPRINTS: ClassVar[tuple[str, ...]] = ("chrome", "safari", "chrome131", "edge")
 
     def __init__(self, cache_dir: Path, min_interval: float = 0.35):
         self.cache_dir = Path(cache_dir)
@@ -47,7 +52,19 @@ class SofascoreClient:
         self._last_request = 0.0
         self._fp_index = 0
         self._session = requests.Session(impersonate=self.FINGERPRINTS[0])
+        self._local = threading.local()  # réglages propres à chaque fil d'exécution (cache_first)
         self.purge_old_entries()
+
+    @contextmanager
+    def cache_first(self):
+        """Dans ce bloc (et ce fil d'exécution), toute donnée en cache est utilisée même expirée :
+        affichage immédiat au lancement, la version à jour étant chargée en parallèle."""
+        previous = getattr(self._local, "cache_first", False)
+        self._local.cache_first = True
+        try:
+            yield
+        finally:
+            self._local.cache_first = previous
 
     def purge_old_entries(self, temp_days: int = 14, image_days: int = 60):
         """Supprime les entrées temporaires et images trop anciennes pour que le cache ne grossisse pas sans fin."""
@@ -112,7 +129,7 @@ class SofascoreClient:
         permanent : la donnée ne changera plus (match terminé) -> cache sans expiration.
         """
         cached, fresh = self._read_cache(path, ttl)
-        if cached is not None and fresh:
+        if cached is not None and (fresh or getattr(self._local, "cache_first", False)):
             return cached.get("data")
 
         try:
@@ -125,7 +142,7 @@ class SofascoreClient:
         # une ressource absente (404) peut apparaître plus tard (stats publiées après le match) :
         # elle n'est jamais mise en cache définitivement
         file = self._cache_path(path, permanent and data is not None)
-        _write_atomic(file, json.dumps({"data": data}).encode("utf-8"))
+        write_atomic(file, json.dumps({"data": data}).encode("utf-8"))
         return data
 
     def get_image(self, path: str, ttl: float = 7 * 24 * 3600) -> bytes | None:
@@ -138,7 +155,7 @@ class SofascoreClient:
         except ApiError:
             return file.read_bytes() if file.exists() else None
         file.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic(file, content or b"")  # fichier vide = pas d'image, évite de redemander
+        write_atomic(file, content or b"")  # fichier vide = pas d'image, évite de redemander
         return content
 
     def _fetch(self, path: str, raw: bool = False):
@@ -165,6 +182,8 @@ class SofascoreClient:
                 if resp.status_code == 404:
                     return None
                 if resp.status_code == 403:
+                    log.warning("403 sur %s avec l'empreinte %s : essai de la suivante", path,
+                                self.FINGERPRINTS[self._fp_index])
                     # empreinte refusée : on essaie la suivante
                     self._fp_index = (self._fp_index + 1) % len(self.FINGERPRINTS)
                     self._session = requests.Session(impersonate=self.FINGERPRINTS[self._fp_index])

@@ -54,10 +54,14 @@ class StandingsPage(Page):
         self.body.addWidget(self.tabs, 1)
 
         self.tabs.currentChanged.connect(self._maybe_load_xg)
-        state.images.loaded.connect(lambda *_: (self.table.model_.refresh_icons(), self.xg_table.model_.refresh_icons()))
-        state.context_changed.connect(self._on_context)
-        state.standings_changed.connect(self._on_loaded)
-        state.team_matches_changed.connect(self._on_team_matches)
+        state.images.loaded.connect(self._refresh_icons)
+        self.bind("context", self._on_context)
+        self.bind("standings", self._on_loaded)
+        self.bind("team_matches", self._on_team_matches)
+
+    def _refresh_icons(self, *_):
+        self.table.model_.refresh_icons()
+        self.xg_table.model_.refresh_icons()
 
     def _export(self):
         table = self.xg_table if self.tabs.currentWidget() is self.expected_tab else self.table

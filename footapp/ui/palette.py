@@ -14,7 +14,8 @@ class CommandPalette(QDialog):
         super().__init__(parent, Qt.FramelessWindowHint | Qt.Popup)
         self.entries_provider, self.on_choose = entries_provider, on_choose
         self.setObjectName("Palette")
-        self.setStyleSheet(f"#Palette {{ background: {theme.CARD}; border: 1px solid {theme.BORDER}; border-radius: 12px; }}")
+        self.setStyleSheet(f"#Palette {{ background: {theme.CARD}; border: 1px solid {theme.BORDER}; "
+                           "border-radius: 12px; }")
         self.setFixedWidth(620)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 10)

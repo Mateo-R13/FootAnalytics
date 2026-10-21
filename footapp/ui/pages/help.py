@@ -1,33 +1,50 @@
 import sys
 
-from PySide6.QtCore import QProcess
-from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel, QMessageBox, QTextBrowser, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import QProcess, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ... import updates
-from ...config import APP_VERSION, CACHE_DIR, GITHUB_REPO
+from ...config import APP_VERSION, CACHE_DIR, GITHUB_REPO, LOG_DIR
 from .. import theme
 from ..widgets import Card, tool_button
 from . import Page
 
 GLOSSARY = [
-    ("xG (expected goals)", "Probabilité qu'un tir se transforme en but, d'après sa position, le type d'action, la partie du corps… "
-     "La somme des xG mesure la qualité des occasions, indépendamment de la réussite."),
-    ("npxG", "xG hors penalties (Understat le fournit directement ; côté Sofascore, estimé en retirant 0,79 xG par penalty)."),
-    ("xGOT (xG cadré)", "xG recalculé après le tir, selon l'endroit où le ballon arrive dans le cadre : mesure la qualité de frappe."),
+    ("xG (expected goals)", "Probabilité qu'un tir se transforme en but, d'après sa position, le type d'action, "
+     "la partie du corps… La somme des xG mesure la qualité des occasions, indépendamment de la réussite."),
+    ("npxG", "xG hors penalties (Understat le fournit directement ; côté Sofascore, estimé en retirant 0,79 xG "
+     "par penalty)."),
+    ("xGOT (xG cadré)", "xG recalculé après le tir, selon l'endroit où le ballon arrive dans le cadre : "
+     "mesure la qualité de frappe."),
     ("Buts évités", "Pour un gardien : xGOT des tirs subis moins buts encaissés. Positif = mieux qu'attendu."),
-    ("xA (expected assists)", "Probabilité qu'une passe devienne une passe décisive, quel que soit le résultat du tir."),
-    ("xPts (points attendus)", "Points qu'une équipe aurait dû prendre d'après les xG des deux équipes (loi de Poisson). "
-     "Pts - xPts > 0 : l'équipe a pris plus de points que ses occasions ne le justifient (réussite, gardien en forme…)."),
+    ("xA (expected assists)", "Probabilité qu'une passe devienne une passe décisive, quel que soit le résultat "
+     "du tir."),
+    ("xPts (points attendus)", "Points qu'une équipe aurait dû prendre d'après les xG des deux équipes (loi de "
+     "Poisson). Pts - xPts > 0 : l'équipe a pris plus de points que ses occasions ne le justifient (réussite, "
+     "gardien en forme…)."),
     ("Par 90 min", "Valeur cumulée ÷ minutes jouées × 90 : compare titulaires et remplaçants. "
      "Filtrez un temps de jeu minimum pour éviter les extrêmes."),
     ("Centile", "Position parmi les joueurs du même poste : 80e centile = meilleur que 80 % d'entre eux. "
      "Pour les métriques « négatives » (ballons perdus, fautes…), l'échelle est inversée."),
-    ("Similarité", "100 - écart moyen de centiles sur le profil du poste : 90 % = en moyenne 10 centiles d'écart par métrique."),
+    ("Similarité", "100 - écart moyen de centiles sur le profil du poste : 90 % = en moyenne 10 centiles d'écart "
+     "par métrique."),
+    ("Indice personnalisé", "Moyenne pondérée de centiles (calculés au sein de chaque poste), de 0 à 100."),
     ("PPDA", "Passes adverses par action défensive (tacles, interceptions, fautes). Bas = pressing intense. "
      "Officiel (Understat) pour les 5 grands championnats, approximé ailleurs."),
     ("Pronostics", "Modèle de Poisson : forces d'attaque et de défense calculées sur les xG de la saison, avantage du "
      "terrain. Indicatif : ne connaît ni les absences ni la forme du moment."),
+    ("Score de Brier", "Erreur moyenne des probabilités annoncées (0 = parfait, plus bas = mieux), comparée à une "
+     "référence naïve qui annoncerait toujours la répartition moyenne victoire / nul / défaite."),
     ("Grosse occasion", "Situation où l'on attend raisonnablement un but (définition Opta / Sofascore)."),
     ("Actions défensives", "Tacles + interceptions + dégagements + tirs contrés."),
     ("Raccourcis", "Ctrl+K (ou Ctrl+F) : recherche globale · double-clic sur un joueur : sa fiche."),
@@ -79,7 +96,8 @@ class HelpPage(Page):
 
         # données & cache
         src = QLabel(
-            f"<p style='color:{theme.INK2}'>Statistiques : API publique du site <b style='color:{theme.INK}'>Sofascore</b> "
+            f"<p style='color:{theme.INK2}'>Statistiques : API publique du site "
+            f"<b style='color:{theme.INK}'>Sofascore</b> "
             "(non officielle). xG par match, xPts et PPDA des 5 grands championnats : <b style='color:"
             f"{theme.INK}'>Understat</b>, qui sert aussi de secours si Sofascore est indisponible. "
             "Usage personnel uniquement.</p>"
@@ -90,9 +108,12 @@ class HelpPage(Page):
         self.cache_label = QLabel(objectName="Muted")
         clear = tool_button("Vider tout le cache", "fa5s.trash-alt", "Supprime aussi les matchs et images en cache")
         clear.clicked.connect(self._clear_cache)
+        logs = tool_button("Journal", "fa5s.file-alt", f"Ouvrir le dossier du journal d'erreurs ({LOG_DIR})")
+        logs.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR))))
         row = QHBoxLayout()
         row.addWidget(self.cache_label)
         row.addStretch()
+        row.addWidget(logs)
         row.addWidget(clear)
         data = Card("Données & cache")
         data.add(src)

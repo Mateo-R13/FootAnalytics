@@ -50,21 +50,31 @@ ACCENTS = {
     "help": "#94a3b8",
 }
 
+# Jetons de couleur du mode courant, déclarés explicitement (lisibles par les outils d'analyse) ;
+# leurs valeurs sont fixées par configure() à partir de MODES.
+TOKENS = ("BG", "SIDEBAR", "SIDEBAR_TOP", "CARD", "CARD_HOVER", "CONTROL", "BORDER", "BORDER_HOVER", "INK", "INK2",
+          "MUTED", "GRID", "AXIS", "PITCH_LINE", "SELECTION", "SCROLL", "ALT_ROW", "HOME", "AWAY", "THIRD",
+          "DIV_HIGH", "DIV_MID", "DIV_LOW", "GOOD_TEXT", "BAD_TEXT")
+(BG, SIDEBAR, SIDEBAR_TOP, CARD, CARD_HOVER, CONTROL, BORDER, BORDER_HOVER, INK, INK2, MUTED, GRID, AXIS,
+ PITCH_LINE, SELECTION, SCROLL, ALT_ROW, HOME, AWAY, THIRD, DIV_HIGH, DIV_MID, DIV_LOW, GOOD_TEXT,
+ BAD_TEXT) = (MODES["dark"][name] for name in TOKENS)
+SURFACE = CARD
+SERIES = [HOME, AWAY, THIRD]
+SEQ_CMAP = LinearSegmentedColormap.from_list("seq_blue", MODES["dark"]["SEQ"])
 MODE = "dark"
 
 
-def configure(mode: str):
+def configure(mode: str) -> None:
     """Fixe les jetons de couleur du mode choisi (à appeler avant de créer les fenêtres)."""
     global MODE, SURFACE, SERIES, SEQ_CMAP
     MODE = mode if mode in MODES else "dark"
     tokens = MODES[MODE]
-    globals().update({k: v for k, v in tokens.items() if k != "SEQ"})
+    module = globals()
+    for name in TOKENS:
+        module[name] = tokens[name]
     SURFACE = tokens["CARD"]
     SERIES = [tokens["HOME"], tokens["AWAY"], tokens["THIRD"]]
     SEQ_CMAP = LinearSegmentedColormap.from_list("seq_blue", tokens["SEQ"])
-
-
-configure("dark")
 
 
 def rgba(hex_color: str, alpha: float) -> str:
@@ -165,7 +175,8 @@ QPushButton#Primary {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:
                        border: none; font-weight: 600; color: #ffffff; }}
 QPushButton#Primary:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7477f5, stop:1 #9b70f8); }}
 QCheckBox {{ spacing: 7px; }}
-QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid {BORDER_HOVER}; background: {CONTROL}; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid {BORDER_HOVER};
+                       background: {CONTROL}; }}
 QCheckBox::indicator:checked {{ background: #3b82f6; border-color: #3b82f6; }}
 
 /* --- onglets internes --- */

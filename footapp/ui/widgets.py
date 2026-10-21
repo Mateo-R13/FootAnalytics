@@ -1,21 +1,45 @@
 """Briques réutilisables : cartes, graphiques, tableaux, images, tâches de fond."""
 import html
+import logging
 import math
 from itertools import count
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
 import qtawesome as qta
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, QRunnable, QSize, QSortFilterProxyModel,
-                            Qt, QThreadPool, Signal, Slot)
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QObject,
+    QRunnable,
+    QSize,
+    QSortFilterProxyModel,
+    Qt,
+    QThreadPool,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QHBoxLayout, QLabel, QMessageBox,
-                               QPushButton, QTableView, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..api.sofascore import ApiError
 from . import theme
+
+log = logging.getLogger("footapp.ui")
 
 
 def icon(name: str, color: str | None = None):
@@ -56,7 +80,7 @@ class Card(QFrame):
 class KpiTile(QFrame):
     """Chiffre clé : libellé, valeur, sous-texte, liseré de couleur."""
 
-    def __init__(self, label: str, accent: str, icon_name: str = None):
+    def __init__(self, label: str, accent: str, icon_name: str | None = None):
         super().__init__()
         self.setObjectName("Card")
         self.setStyleSheet(f"#Card {{ border-top: 3px solid {accent}; }}")
@@ -186,7 +210,8 @@ class _ImgTask(QRunnable):
 class ImageStore(QObject):
     """Charge logos et photos en arrière-plan ; signale `loaded(clé)` quand une image arrive."""
     loaded = Signal(str)
-    PATHS = {"team": "/team/{}/image", "player": "/player/{}/image", "tournament": "/unique-tournament/{}/image"}
+    PATHS: ClassVar[dict[str, str]] = {
+        "team": "/team/{}/image", "player": "/player/{}/image", "tournament": "/unique-tournament/{}/image"}
 
     def __init__(self, client, parent=None):
         super().__init__(parent)
@@ -271,7 +296,7 @@ class ChartWidget(QWidget):
         """Affiche labels[i] quand la souris survole le point i de `collection`."""
         annot = ax.annotate(
             "", xy=(0, 0), xytext=(12, 12), textcoords="offset points", fontsize=9, color=theme.INK,
-            bbox=dict(boxstyle="round,pad=0.5", fc=theme.CONTROL, ec=theme.BORDER), zorder=100,
+            bbox={"boxstyle": "round,pad=0.5", "fc": theme.CONTROL, "ec": theme.BORDER}, zorder=100,
             annotation_clip=False)
         annot.set_visible(False)
 
@@ -306,6 +331,9 @@ def _fmt(v) -> str:
     if isinstance(v, (float, np.floating)):
         return f"{v:.0f}" if float(v).is_integer() else f"{v:.2f}"
     return str(v)
+
+
+_ROOT = QModelIndex()  # index racine (paramètre par défaut des méthodes de modèle Qt)
 
 
 class DataFrameModel(QAbstractTableModel):
@@ -344,10 +372,10 @@ class DataFrameModel(QAbstractTableModel):
             if name in self._icons and len(self._df):
                 self.dataChanged.emit(self.index(0, c), self.index(len(self._df) - 1, c), [Qt.DecorationRole])
 
-    def rowCount(self, parent=QModelIndex()):
+    def rowCount(self, parent=_ROOT):
         return 0 if parent.isValid() else len(self._df)
 
-    def columnCount(self, parent=QModelIndex()):
+    def columnCount(self, parent=_ROOT):
         return 0 if parent.isValid() else len(self._df.columns)
 
     _NUMBER = (int, float, np.integer, np.floating)
@@ -513,11 +541,14 @@ class _Task(QRunnable):
             try:
                 result = self.fn(self.signals.progress.emit)
             except ApiError as exc:
+                log.warning("%s", exc)
                 self.signals.failed.emit(self.task_id, str(exc))
             except (KeyError, TypeError, IndexError, AttributeError) as exc:
+                log.exception("Format de données inattendu")  # trace complète dans le journal
                 self.signals.failed.emit(self.task_id, "Les données reçues ont un format inattendu : Sofascore a "
                                                        f"peut-être modifié son API ({type(exc).__name__} : {exc}).")
             except Exception as exc:
+                log.exception("Erreur dans une tâche de fond")
                 self.signals.failed.emit(self.task_id, f"{type(exc).__name__} : {exc}")
             else:
                 self.signals.done.emit(self.task_id, result)
@@ -541,6 +572,10 @@ class TaskRunner(QObject):
         self._ids = count(1)
         self._latest: dict[str, int] = {}
         self._pending: dict[int, tuple] = {}
+
+    def is_idle(self) -> bool:
+        """Aucune tâche en cours (utile aux tests de l'interface)."""
+        return not self._pending
 
     def run(self, tag: str, fn, on_done, on_error=None):
         """fn(progress) est exécutée en arrière-plan ; on_done(result) dans le thread UI."""

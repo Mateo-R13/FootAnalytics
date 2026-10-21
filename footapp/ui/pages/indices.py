@@ -2,14 +2,24 @@ import json
 
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QSpinBox,
-                               QSplitter, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...analysis import composite_index, per90
 from ...config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITIONS
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, chart_card, icon, table_card, tool_button
-from . import Page
+from . import Page, scope_combo
 from .players import metric_combo
 
 MAX_COMPONENTS = 8
@@ -57,9 +67,7 @@ class IndicesPage(Page):
         new = tool_button("Nouveau", "fa5s.plus")
         save = tool_button("Enregistrer", "fa5s.save")
         delete = tool_button("", "fa5s.trash-alt", "Supprimer l'indice enregistré")
-        self.scope = QComboBox()
-        self.scope.addItem("Compétition actuelle", "league")
-        self.scope.addItem("5 grands championnats", "big5")
+        self.scope = scope_combo()
         self.position = QComboBox()
         self.position.addItem("Joueurs de champ", "outfield")
         self.position.addItem("Tous les postes", None)
@@ -110,8 +118,8 @@ class IndicesPage(Page):
         self.scope.currentIndexChanged.connect(self._on_scope)
         self.position.currentIndexChanged.connect(self.run)
         self.min_minutes.valueChanged.connect(self.run)
-        state.players_changed.connect(lambda df: self.run())
-        state.big5_changed.connect(lambda df: self.run())
+        self.bind("players", lambda df: self.run())
+        self.bind("big5", lambda df: self.run())
 
     # --- composition -----------------------------------------------------------
     def _add_row(self, key="keyPasses", weight=25, run=True):
@@ -191,9 +199,7 @@ class IndicesPage(Page):
 
     # --- calcul ------------------------------------------------------------------
     def _on_scope(self):
-        if self.scope.currentData() == "big5" and self.state.big5 is None:
-            self.chart.message("Chargement des 5 grands championnats… (environ 40 requêtes la première fois)")
-            self.state.request_big5()
+        self.needs_big5(self.scope.currentData(), self.chart.message)
         self.run()
 
     def run(self):
@@ -226,6 +232,6 @@ class IndicesPage(Page):
         self.table.set_dataframe(view.head(300))
         top = ranked.head(15)
         scope = "5 grands championnats" if self.scope.currentData() == "big5" else self.ctx.label
-        charts.bar_ranking(self.chart, [f"{p} · {t}" for p, t in zip(top["player"], top["team"])],
+        charts.bar_ranking(self.chart, [f"{p} · {t}" for p, t in zip(top["player"], top["team"], strict=True)],
                            top["index"].values, f"Indice « {self.index_box.currentText()} »",
                            f"{scope} · ≥ {self.min_minutes.value()} min · 0 à 100")

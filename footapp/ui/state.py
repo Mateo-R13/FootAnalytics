@@ -3,11 +3,15 @@ import json
 from dataclasses import dataclass
 
 import pandas as pd
-from PySide6.QtCore import QObject, QSettings, Qt, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 
 from ..api.understat import LEAGUES as BIG5
-from ..config import APP_NAME, COMPETITIONS
+from ..config import COMPETITIONS
 from ..data import link_team_ids
+from .settings import open_settings
+
+# Données partagées auxquelles les pages s'abonnent (Page.bind), dans l'ordre où elles s'appliquent
+DATA_KEYS = ("context", "standings", "players", "team_matches", "big5")
 
 
 @dataclass(frozen=True)
@@ -35,14 +39,33 @@ class AppState(QObject):
     def __init__(self, data, runner, images, parent=None):
         super().__init__(parent)
         self.data, self.runner, self.images = data, runner, images
-        self.settings = QSettings(APP_NAME, APP_NAME)
+        self.settings = open_settings()
         self.ctx: Context | None = None
         self.standings = pd.DataFrame()
         self.players = pd.DataFrame()
         self.team_matches = None  # None = pas encore demandé pour ce contexte
         self.big5 = None
         self._loading = set()
+        self._loaded = set()  # données disponibles pour le contexte courant
+        self._fresh = set()   # données déjà mises à jour depuis le réseau pour le contexte courant
         self._scaled = {}
+
+    # --- accès générique (pages) -------------------------------------------------
+    def signal(self, key: str):
+        return {"context": self.context_changed, "standings": self.standings_changed,
+                "players": self.players_changed, "team_matches": self.team_matches_changed,
+                "big5": self.big5_changed}[key]
+
+    def snapshot(self) -> dict:
+        """Données déjà disponibles, dans l'ordre DATA_KEYS (pour une page créée après leur chargement)."""
+        available = {
+            "context": (self.ctx is not None, self.ctx),
+            "standings": ("standings" in self._loaded, self.standings),
+            "players": ("players" in self._loaded, self.players),
+            "team_matches": (self.team_matches is not None, self.team_matches),
+            "big5": (self.big5 is not None, self.big5),
+        }
+        return {key: available[key][1] for key in DATA_KEYS if available[key][0]}
 
     # --- contexte ----------------------------------------------------------------
     def set_context(self, ctx: Context):
@@ -51,18 +74,49 @@ class AppState(QObject):
         self.players = pd.DataFrame()
         self.team_matches = None
         self._loading.discard("team_matches")
+        self._loaded.clear()
+        self._fresh.clear()
         self.context_changed.emit(ctx)
-        self.runner.run("standings", lambda progress: self.data.standings(ctx.ut, ctx.sid), self._on_standings)
-        self.runner.run("players", lambda progress: self.data.player_season_stats(ctx.ut, ctx.sid, progress),
-                        self._on_players)
+        self._load("standings", lambda progress: self.data.standings(ctx.ut, ctx.sid), self._on_standings)
+        self._load("players", lambda progress: self.data.player_season_stats(ctx.ut, ctx.sid, progress),
+                   self._on_players)
+
+    def _load(self, key: str, fetch, apply):
+        """Chargement en deux temps : d'abord le cache, même expiré, pour un affichage immédiat, puis la
+        version à jour en arrière-plan. Une donnée en cache n'écrase jamais une donnée déjà rafraîchie, et
+        une mise à jour identique à ce qui est affiché ne déclenche aucun recalcul."""
+        ctx = self.ctx
+
+        def from_cache(progress):
+            with self.data.cache_first():
+                return fetch(progress)
+
+        def on_cached(df):
+            if ctx == self.ctx and key not in self._fresh:
+                apply(df)
+
+        def on_fresh(df):
+            if ctx != self.ctx:
+                return
+            self._fresh.add(key)
+            current = getattr(self, key)
+            if key in self._loaded and current.equals(df):
+                return
+            apply(df)
+
+        # le cache peut être vide ou illisible : seule l'erreur de la version à jour est signalée
+        self.runner.run(f"{key}_cache", from_cache, on_cached, on_error=lambda message: None)
+        self.runner.run(key, fetch, on_fresh)
 
     def _on_standings(self, df):
         self.standings = df
+        self._loaded.add("standings")
         self.standings_changed.emit(df)
         self._notify_source(df, "classement")
 
     def _on_players(self, df):
         self.players = df
+        self._loaded.add("players")
         self.players_changed.emit(df)
         self._notify_source(df, "statistiques joueurs")
 
@@ -104,7 +158,7 @@ class AppState(QObject):
         if "big5" in self._loading:
             return
         self._loading.add("big5")
-        names = dict((ut, name) for name, ut in COMPETITIONS)
+        names = {ut: name for name, ut in COMPETITIONS}
 
         def job(progress):
             frames = []

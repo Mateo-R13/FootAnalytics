@@ -1,15 +1,25 @@
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QProgressBar,
-                               QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QProgressBar,
+    QPushButton,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
+from .. import updates
 from ..api.sofascore import SofascoreClient
 from ..api.understat import UnderstatClient
 from ..config import APP_NAME, APP_VERSION, CACHE_DIR, COMPETITIONS, POSITIONS, resource_path
 from ..data import FootData
-from .. import updates
 from . import theme
-from .palette import CommandPalette
 from .pages.compare import ComparePage
 from .pages.dashboard import DashboardPage
 from .pages.help import HelpPage
@@ -21,6 +31,7 @@ from .pages.profile import ProfilePage
 from .pages.scouting import ScoutingPage
 from .pages.standings import StandingsPage
 from .pages.teams import TeamsPage
+from .palette import CommandPalette
 from .state import AppState, Context
 from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
 
@@ -46,21 +57,22 @@ def _as_int(value):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, data: FootData | None = None, check_updates: bool = True):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1500, 940)
         self.setMinimumSize(1200, 760)
         self.setWindowIcon(QIcon(str(resource_path("assets/icon.png"))))
 
-        client = SofascoreClient(CACHE_DIR)
+        # sources de données injectables (tests : réponses enregistrées, sans réseau)
+        if data is None:
+            data = FootData(SofascoreClient(CACHE_DIR), UnderstatClient(CACHE_DIR))
         self.runner = TaskRunner(self)
-        data = FootData(client, UnderstatClient(CACHE_DIR))
-        self.state = AppState(data, self.runner, ImageStore(client, self), self)
+        self.state = AppState(data, self.runner, ImageStore(data.client, self), self)
 
-        # --- pages
+        # --- pages : construites à la première ouverture (voir page())
         self.stack = QStackedWidget()
-        self.pages, self.nav_buttons = {}, {}
+        self.pages, self.nav_buttons, self._page_classes = {}, {}, {}
         group = QButtonGroup(self)
         group.setExclusive(True)
 
@@ -77,9 +89,7 @@ class MainWindow(QMainWindow):
             else:
                 side.addStretch()
             for cls in page_classes:
-                page = cls(self.state)
-                self.pages[cls.key] = page
-                self.stack.addWidget(page)
+                self._page_classes[cls.key] = cls
                 btn = QPushButton(icon(cls.icon_name, theme.ACCENTS[cls.key]), f"  {NAV_LABELS[cls.key]}")
                 btn.setIconSize(QSize(17, 17))
                 btn.setCheckable(True)
@@ -159,18 +169,19 @@ class MainWindow(QMainWindow):
         self.topbar_layout.insertWidget(2, search)
 
         # nouvelle version publiée sur GitHub ?
-        self.runner.run("updates", lambda progress: updates.latest_release(), self._on_release,
-                        on_error=lambda message: None)
+        if check_updates:
+            self.runner.run("updates", lambda progress: updates.latest_release(), self._on_release,
+                            on_error=lambda message: None)
 
         # préférences de la session précédente (compétition, saison, page)
-        self.settings = QSettings(APP_NAME, APP_NAME)
+        self.settings = self.state.settings  # paramètres partagés
         self._wanted_season = _as_int(self.settings.value("season_id"))
         idx = self.competition.findData(_as_int(self.settings.value("competition")) or COMPETITIONS[0][1])
         self.competition.blockSignals(True)
         self.competition.setCurrentIndex(max(idx, 0))
         self.competition.blockSignals(False)
         page = str(self.settings.value("page") or "dashboard")
-        self.show_page(page if page in self.pages else "dashboard")
+        self.show_page(page if page in self._page_classes else "dashboard")
         self._load_seasons()
 
     def _brand(self):
@@ -191,8 +202,21 @@ class MainWindow(QMainWindow):
         row.addLayout(names, 1)
         return row
 
+    @property
+    def page_keys(self) -> list[str]:
+        return list(self._page_classes)
+
+    def page(self, key: str):
+        """Page `key`, construite à sa première demande : le démarrage ne paie que la page affichée."""
+        if key not in self.pages:
+            page = self._page_classes[key](self.state)
+            page.prime()  # données déjà chargées : appliquées à l'ouverture
+            self.pages[key] = page
+            self.stack.addWidget(page)
+        return self.pages[key]
+
     def show_page(self, key: str):
-        self.stack.setCurrentWidget(self.pages[key])
+        self.stack.setCurrentWidget(self.page(key))
         self.nav_buttons[key].setChecked(True)
         if hasattr(self, "settings"):
             self.settings.setValue("page", key)
@@ -203,11 +227,11 @@ class MainWindow(QMainWindow):
             self.banner.show_message("Ce joueur ne fait pas partie de la compétition sélectionnée : choisissez sa "
                                      "compétition en haut de la fenêtre pour ouvrir sa fiche.")
             return
+        self.page("profile").request_player(pid)
         self.show_page("profile")
-        self.pages["profile"].show_player(pid)
 
     def _palette_entries(self):
-        entries = [("page", NAV_LABELS[k].replace("&&", "&"), "page", k) for k in self.pages]
+        entries = [("page", NAV_LABELS[k].replace("&&", "&"), "page", k) for k in self._page_classes]
         if not self.state.standings.empty:
             entries += [("team", r["Équipe"], "équipe", r["Équipe"]) for _, r in self.state.standings.iterrows()]
         players = self.state.players
@@ -223,7 +247,7 @@ class MainWindow(QMainWindow):
             self._open_player(value)
         elif kind == "team":
             self.show_page("teams")
-            self.pages["teams"].show_team(value)
+            self.page("teams").show_team(value)
 
     def _on_release(self, release):
         if release and updates.is_newer(release["version"], APP_VERSION):
@@ -245,22 +269,49 @@ class MainWindow(QMainWindow):
 
     def _load_seasons(self):
         ut = self.competition.currentData()
+        self.season.blockSignals(True)
         self.season.clear()
+        self.season.blockSignals(False)
         self.context_label.setText(self.competition.currentText())
         self._refresh_comp_logo()
-        self.runner.run("seasons", lambda progress: self.state.data.seasons(ut), self._on_seasons)
+        data = self.state.data
 
-    def _on_seasons(self, seasons):
-        self.season.blockSignals(True)
+        self._seasons_fresh = None
+
+        def from_cache(progress):
+            with data.cache_first():
+                return data.seasons(ut)
+
+        def on_cached(seasons):
+            if self._seasons_fresh != ut:  # la liste à jour, si elle est déjà arrivée, fait foi
+                self._on_seasons(seasons, ut)
+
+        def on_fresh(seasons):
+            self._seasons_fresh = ut
+            self._on_seasons(seasons, ut)
+
+        # liste en cache d'abord (démarrage immédiat), puis liste à jour (nouvelle saison éventuelle)
+        self.runner.run("seasons_cache", from_cache, on_cached, on_error=lambda message: None)
+        self.runner.run("seasons", lambda progress: data.seasons(ut), on_fresh)
+
+    def _on_seasons(self, seasons, ut):
+        if ut != self.competition.currentData() or not seasons:
+            return
+        ids = [s["id"] for s in seasons]
+        if ids == [self.season.itemData(i) for i in range(self.season.count())]:
+            return  # liste inchangée : rien à refaire
+        current = self.season.currentData()
+        # saison affichée si elle existe toujours, sinon saison mémorisée, sinon la plus récente
+        keep = next((sid for sid in (current, self._wanted_season) if sid in ids), ids[0])
+        self.season.blockSignals(True)  # un seul chargement, déclenché explicitement ci-dessous
         self.season.clear()
         for s in seasons:
             self.season.addItem(s["name"], s["id"])
+        self.season.setCurrentIndex(ids.index(keep))
         self.season.blockSignals(False)
-        if seasons:
-            # saison mémorisée si elle appartient à cette compétition, sinon la plus récente
-            idx = self.season.findData(self._wanted_season) if self._wanted_season else -1
-            self._wanted_season = None
-            self.season.setCurrentIndex(max(idx, 0))
+        self._wanted_season = None
+        ctx = self.state.ctx
+        if ctx is None or (ctx.ut, ctx.sid) != (ut, keep):
             self._on_season()
 
     def _on_season(self):

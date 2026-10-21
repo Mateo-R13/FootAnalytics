@@ -47,13 +47,13 @@ class PlayersPage(Page):
         self.search = QLineEdit(placeholderText="Rechercher un joueur…")
         self.search.addAction(icon("fa5s.search", "#7d8396"), QLineEdit.LeadingPosition)
         self.search.setMinimumWidth(220)
-        self.position = combo(["Tous les postes"] + list(POSITIONS.values()), [None] + list(POSITIONS))
+        self.position = combo(["Tous les postes", *POSITIONS.values()], [None, *POSITIONS])
         self.team = combo(["Toutes les équipes"], [None])
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=270, suffix=" min")
         self.min_minutes.setToolTip("Temps de jeu minimum (écarte les petits échantillons)")
         self.per90 = QCheckBox("Par 90 min")
         self.per90.setChecked(True)
-        self.category = combo(["Toutes les catégories"] + PLAYER_CATEGORIES, [None] + PLAYER_CATEGORIES)
+        self.category = combo(["Toutes les catégories", *PLAYER_CATEGORIES], [None, *PLAYER_CATEGORIES])
         self.category.setCurrentIndex(1 + PLAYER_CATEGORIES.index("Buts & tirs"))
 
         filters = Card(margins=10)
@@ -97,8 +97,8 @@ class PlayersPage(Page):
         for w in (self.min_minutes, self.top_n):
             w.valueChanged.connect(self.refresh)
         self.per90.toggled.connect(self.refresh)
-        state.context_changed.connect(self._on_context)
-        state.players_changed.connect(self._on_loaded)
+        self.bind("context", self._on_context)
+        self.bind("players", self._on_loaded)
 
     def _on_context(self, ctx):
         self.table.set_dataframe(pd.DataFrame())
@@ -138,7 +138,8 @@ class PlayersPage(Page):
         for k in ("minutesPlayed", "appearances"):
             if k not in keys:
                 keys.insert(0, k)
-        view = df.sort_values("rating", ascending=False)[["player", "team", "position", "player_id", "team_id"] + keys].rename(
+        columns = ["player", "team", "position", "player_id", "team_id", *keys]
+        view = df.sort_values("rating", ascending=False)[columns].rename(
             columns={"player": "Joueur", "team": "Équipe", "position": "Poste",
                      **{k: ALL_PLAYER_METRICS[k][0] for k in keys}})
         self.table.set_dataframe(view)
@@ -151,6 +152,6 @@ class PlayersPage(Page):
         label, _, kind = ALL_PLAYER_METRICS[key]
         top = df.dropna(subset=[key]).nlargest(self.top_n.value(), key)
         unit = f" ({mode})" if kind == "count" else ""
-        charts.bar_ranking(self.chart, [f"{p} · {t}" for p, t in zip(top["player"], top["team"])],
+        charts.bar_ranking(self.chart, [f"{p} · {t}" for p, t in zip(top["player"], top["team"], strict=True)],
                            top[key].values, f"{label}{unit}",
                            f"{self.ctx.label} · ≥ {self.min_minutes.value()} min jouées")

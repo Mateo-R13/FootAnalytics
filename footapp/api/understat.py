@@ -8,11 +8,12 @@ import hashlib
 import json
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from curl_cffi import requests
 
-from .sofascore import ApiError, _write_atomic
+from .sofascore import ApiError, write_atomic
 
 # identifiant Sofascore de la compétition -> nom de ligue Understat
 LEAGUES = {34: "Ligue_1", 17: "EPL", 8: "La_liga", 23: "Serie_A", 35: "Bundesliga"}
@@ -26,6 +27,17 @@ class UnderstatClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._session = requests.Session(impersonate="chrome")
+        self._local = threading.local()
+
+    @contextmanager
+    def cache_first(self):
+        """Même principe que SofascoreClient.cache_first : données en cache utilisées même expirées."""
+        previous = getattr(self._local, "cache_first", False)
+        self._local.cache_first = True
+        try:
+            yield
+        finally:
+            self._local.cache_first = previous
 
     @staticmethod
     def supports(ut: int) -> bool:
@@ -37,8 +49,10 @@ class UnderstatClient:
         path = f"/getLeagueData/{league}/{season_start}"
         file = self.cache_dir / (hashlib.sha1(path.encode()).hexdigest() + ".json")
         cached = self._read(file)
-        if cached is not None and ttl > 0 and max(0.0, time.time() - file.stat().st_mtime) < ttl:
-            return cached
+        if cached is not None:
+            fresh = ttl > 0 and max(0.0, time.time() - file.stat().st_mtime) < ttl
+            if fresh or getattr(self._local, "cache_first", False):
+                return cached
         try:
             with self._lock:
                 resp = self._session.get(self.BASE_URL + path, timeout=25, headers={
@@ -56,7 +70,7 @@ class UnderstatClient:
             if cached is not None:
                 return cached
             raise ApiError("Impossible de joindre Understat : vérifiez votre connexion internet.") from exc
-        _write_atomic(file, json.dumps(data).encode("utf-8"))
+        write_atomic(file, json.dumps(data).encode("utf-8"))
         return data
 
     @staticmethod

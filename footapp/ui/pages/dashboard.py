@@ -1,9 +1,18 @@
 import html
+from functools import partial
 
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .. import charts, theme
 from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, table_card
@@ -20,6 +29,12 @@ LEADERS = [
     ("Meilleures notes", "rating", "fa5s.star", "#8b5cf6", 270),
     ("Gardiens : buts évités", "goalsPrevented", "fa5s.hand-paper", "#14b8a6", 0),
 ]
+
+
+def _per90(row, key):
+    if not row["minutesPlayed"] or pd.isna(row[key]):
+        return None
+    return round(row[key] / row["minutesPlayed"] * 90, 2)
 
 
 class LeaderCard(Card):
@@ -62,7 +77,7 @@ class LeaderCard(Card):
     def update_data(self, df: pd.DataFrame):
         top = df[df["minutesPlayed"] >= self.min_minutes].dropna(subset=[self.metric_key])
         top = top.nlargest(5, self.metric_key)
-        for i, (rank, logo, name, value) in enumerate(self.rows):
+        for i, (_rank, _logo, name, value) in enumerate(self.rows):
             if i < len(top):
                 r = top.iloc[i]
                 name.setText(f'<a href="{int(r.player_id)}" style="color:{theme.INK}; text-decoration:none">'
@@ -78,7 +93,7 @@ class LeaderCard(Card):
         self._refresh_logos()
 
     def _refresh_logos(self, *_):
-        for tid, (_, logo, _, _) in zip(self.team_ids, self.rows):
+        for tid, (_, logo, _, _) in zip(self.team_ids, self.rows, strict=True):
             pix = self.state.logo("team", tid) if tid else None
             logo.setPixmap(pix) if pix else logo.clear()
 
@@ -140,9 +155,9 @@ class DashboardPage(Page):
         scroll.setWidget(content)
         self.body.addWidget(scroll)
 
-        state.context_changed.connect(self._on_context)
-        state.standings_changed.connect(self._on_standings)
-        state.players_changed.connect(self._on_players)
+        self.bind("context", self._on_context)
+        self.bind("standings", self._on_standings)
+        self.bind("players", self._on_players)
         self._update_watchlist()
 
     def _on_context(self, ctx):
@@ -201,7 +216,7 @@ class DashboardPage(Page):
                              "player_id": pid, "team_id": None})
                 continue
             r = match.iloc[0]
-            per = lambda k: round(r[k] / r["minutesPlayed"] * 90, 2) if r["minutesPlayed"] and pd.notna(r[k]) else None
+            per = partial(_per90, r)
             rows.append({"Joueur": r["player"], "Équipe": r["team"], "Compétition": self.ctx.label,
                          "Matchs": r["appearances"], "Minutes": r["minutesPlayed"], "Buts": r["goals"],
                          "Passes déc.": r["assists"], "xG /90": per("expectedGoals"), "xA /90": per("expectedAssists"),

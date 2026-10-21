@@ -121,9 +121,9 @@ class TeamsPage(Page):
         self.team_b.currentIndexChanged.connect(self._compare)
         self.form_team.currentIndexChanged.connect(self._show_form)
         self.form_window.valueChanged.connect(self._show_form)
-        state.context_changed.connect(self._on_context)
-        state.standings_changed.connect(lambda df: self.load() if self.isVisible() else None)
-        state.team_matches_changed.connect(self._on_team_matches)
+        self.bind("context", self._on_context)
+        self.bind("standings", lambda df: self.load())
+        self.bind("team_matches", self._on_team_matches)
         state.images.loaded.connect(lambda *_: self.venue_table.model_.refresh_icons())
 
     def _on_context(self, ctx):
@@ -233,7 +233,8 @@ class TeamsPage(Page):
             .rename(columns={"Équipe": "name"})
         self.bar_chart.message("Chargement des statistiques d'équipes…")
         self.scatter_chart.message("Chargement…")
-        self.state.runner.run("teams", lambda progress: self.state.data.team_season_stats(ctx.ut, ctx.sid, teams, progress),
+        data = self.state.data
+        self.state.runner.run("teams", lambda progress: data.team_season_stats(ctx.ut, ctx.sid, teams, progress),
                               self._on_loaded)
 
     def _on_loaded(self, df):
@@ -255,7 +256,7 @@ class TeamsPage(Page):
         df = self.view()
         cat = self.category.currentData()
         keys = [k for k, (_, c, _) in ALL_TEAM_METRICS.items() if cat is None or c == cat]
-        table = df[["team", "team_id", "matches"] + keys].rename(
+        table = df[["team", "team_id", "matches", *keys]].rename(
             columns={"team": "Équipe", "matches": "Matchs", **{k: ALL_TEAM_METRICS[k][0] for k in keys}})
         self.table.set_dataframe(table)
 

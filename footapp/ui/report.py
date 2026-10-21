@@ -3,7 +3,6 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 from PySide6.QtGui import QImage
 
@@ -93,6 +92,8 @@ def table_pages(df: pd.DataFrame, title: str, rows_per_page: int = 28) -> list[F
 
 def save(path: str, figures: list[Figure]):
     """Écrit les figures dans un PDF ; celles de l'interface sont mises au format A4 le temps de l'export."""
+    from matplotlib.backends.backend_pdf import PdfPages  # import différé : ~0,3 s, inutile au démarrage
+
     with PdfPages(path) as pdf:
         for fig in figures:
             if not (fig.axes or fig.texts):
