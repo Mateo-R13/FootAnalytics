@@ -31,6 +31,7 @@ from .pages.profile import ProfilePage
 from .pages.scouting import ScoutingPage
 from .pages.standings import StandingsPage
 from .pages.teams import TeamsPage
+from .pages.value import ValuePage
 from .palette import CommandPalette
 from .state import AppState, Context
 from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
@@ -38,13 +39,14 @@ from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
 # Organisation de la navigation : (titre de section, [classes de pages])
 NAVIGATION = [
     ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage, PredictionsPage]),
-    ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage, IndicesPage]),
+    ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage, ValuePage, IndicesPage]),
     ("ÉQUIPES", [TeamsPage]),
     ("", [HelpPage]),
 ]
 NAV_LABELS = {"dashboard": "Tableau de bord", "standings": "Classement", "matches": "Matchs",
               "predictions": "Pronostics", "players": "Statistiques joueurs", "profile": "Fiche joueur",
-              "compare": "Comparaison", "scouting": "Recherche avancée", "indices": "Indices personnalisés",
+              "compare": "Comparaison", "scouting": "Recherche avancée", "value": "Valeur vs performance",
+              "indices": "Indices personnalisés",
               "teams": "Équipes",
               "help": "Aide && paramètres"}
 
@@ -318,7 +320,8 @@ class MainWindow(QMainWindow):
         sid = self.season.currentData()
         if sid is None:
             return
-        ctx = Context(self.competition.currentData(), sid, self.competition.currentText(), self.season.currentText())
+        ctx = Context(self.competition.currentData(), sid, self.competition.currentText(), self.season.currentText(),
+                      latest=self.season.currentIndex() == 0)
         self.context_label.setText(ctx.label)
         self.settings.setValue("competition", ctx.ut)
         self.settings.setValue("season_id", sid)

@@ -25,6 +25,19 @@ from .players import metric_combo
 MAX_COMPONENTS = 8
 
 
+def saved_indices(settings) -> dict:
+    """Indices enregistrés par l'utilisateur : {nom: [(métrique, poids)]}."""
+    try:
+        return json.loads(settings.value("indices") or "{}")
+    except (TypeError, ValueError):
+        return {}
+
+
+def all_indices(settings) -> dict:
+    """Indices proposés par défaut + indices enregistrés (ces derniers l'emportent à nom égal)."""
+    return {**INDEX_PRESETS, **saved_indices(settings)}
+
+
 class WeightRow(QWidget):
     def __init__(self, on_change, on_remove, key="keyPasses", weight=25):
         super().__init__()
@@ -150,13 +163,10 @@ class IndicesPage(Page):
 
     # --- indices enregistrés -----------------------------------------------------
     def _saved(self) -> dict:
-        try:
-            return json.loads(self.state.settings.value("indices") or "{}")
-        except (TypeError, ValueError):
-            return {}
+        return saved_indices(self.state.settings)
 
     def _all_indices(self) -> dict:
-        return {**INDEX_PRESETS, **self._saved()}
+        return all_indices(self.state.settings)
 
     def _reload_list(self, select=None):
         self.index_box.clear()

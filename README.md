@@ -17,7 +17,8 @@ Python + PySide6, avec installeur Windows (thème sombre ou clair).
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
 | **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **tirs & heatmap de la saison** (carte des tirs avec xG, xG par tir et % cadrés vs moyenne du poste, répartition par situation / surface de contact / zone), **profils similaires** (joueurs statistiquement les plus proches), **carrière** saison par saison, toutes les stats avec rang au poste, **liste de suivi**, **export PDF** |
 | **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre, référentiel compétition ou **5 grands championnats** |
-| **Recherche avancée** | Joueurs remplissant plusieurs critères (centiles par poste), compétition ou 5 grands championnats, recherches enregistrables |
+| **Recherche avancée** | Joueurs remplissant plusieurs critères (centiles par poste), filtres **âge / valeur estimée / fin de contrat**, compétition ou 5 grands championnats, recherches enregistrables |
+| **Valeur vs performance** | Nuage valeur estimée Sofascore (échelle log) vs score (note, profil du poste, indice ou métrique), performance attendue par régression robuste (poste, âge, championnat), joueurs **sous-évalués / surévalués** (pistes à vérifier), R² affiché, filtres âge / valeur / contrat, export — saison en cours |
 | **Indices personnalisés** | Scores composés de métriques pondérées (Créateur, Finisseur, Récupérateur… ou les vôtres), classement et export |
 | **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA, **comparaison de deux équipes** (radar), **forme** (xG glissants), **bilan domicile / extérieur** |
 | **Aide & paramètres** | Glossaire, thème sombre / clair, vérification des mises à jour, gestion du cache |
@@ -93,6 +94,9 @@ $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # 
 
 - Pages construites à leur première ouverture ; une page cachée ne recalcule rien (mises à jour différées).
 - Données affichées immédiatement depuis le cache (même expiré), puis rafraîchies en arrière-plan.
+- Valeurs et contrats chargés seulement à l'ouverture de la page Valeur vs performance ou à l'usage d'un filtre
+  (une requête par équipe, réponses allégées à ~2 % de leur taille avant mise en cache, 3 jours) ; 5 grands
+  championnats (~100 équipes) sur demande explicite uniquement.
 - Écran de chargement affiché avant le chargement des bibliothèques ; modules lourds (PDF) chargés à la demande.
 - Application allégée de moitié (~140 Mo installée) : terrain de football dessiné sans mplsoccer ni scipy,
   composants Qt inutilisés retirés du build.
@@ -115,7 +119,10 @@ et comme source de secours si Sofascore est indisponible.
   n'autorisent pas un usage commercial.
 - Elle peut changer ou bloquer sans préavis : tout l'accès réseau est isolé dans `footapp/api/sofascore.py`.
 - Cache disque dans `%LOCALAPPDATA%\FootAnalytics\cache` : matchs terminés conservés définitivement,
-  le reste de 15 min à 12 h. Le bouton « Actualiser » vide le cache temporaire.
+  le reste de 15 min à 12 h (effectifs, valeurs et contrats : 3 jours). Le bouton « Actualiser » vide le cache
+  temporaire.
+- Valeurs marchandes : estimations Sofascore (pas des prix de transfert) ; effectifs, âges et contrats décrivent
+  la saison en cours uniquement.
 
 ## Structure
 
@@ -126,7 +133,8 @@ footapp/
   api/sofascore.py            client HTTP + cache disque (JSON et images)
   api/understat.py            client Understat (xG par match, xPts, PPDA, secours)
   data.py                     appels API -> DataFrames pandas (+ métriques dérivées)
-  analysis.py                 par 90 min, centiles, profils similaires, recherche, Poisson (xPts, pronostics)
+  analysis.py                 par 90 min, centiles, profils similaires, recherche, Poisson (xPts, pronostics),
+                              valeur vs performance (régression robuste de Huber)
   updates.py                  vérification des Releases GitHub
   logs.py                     journal (fichier tournant, erreurs non gérées)
   ui/

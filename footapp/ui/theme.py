@@ -45,6 +45,7 @@ ACCENTS = {
     "profile": "#06b6d4",
     "compare": "#ec4899",
     "scouting": "#14b8a6",
+    "value": "#84cc16",
     "indices": "#eab308",
     "teams": "#f97316",
     "help": "#94a3b8",

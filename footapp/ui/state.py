@@ -11,7 +11,7 @@ from ..data import link_team_ids
 from .settings import open_settings
 
 # Données partagées auxquelles les pages s'abonnent (Page.bind), dans l'ordre où elles s'appliquent
-DATA_KEYS = ("context", "standings", "players", "team_matches", "big5")
+DATA_KEYS = ("context", "standings", "players", "team_matches", "big5", "profiles")
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class Context:
     sid: int
     competition: str
     season: str
+    latest: bool = True  # saison en cours (les effectifs, valeurs et contrats ne décrivent que celle-ci)
 
     @property
     def label(self) -> str:
@@ -32,6 +33,7 @@ class AppState(QObject):
     players_changed = Signal(object)       # DataFrame
     team_matches_changed = Signal(object)  # DataFrame équipe x match (chargé à la demande)
     big5_changed = Signal(object)          # DataFrame joueurs des 5 grands championnats
+    profiles_changed = Signal(object)      # DataFrame valeurs / âges / contrats (chargé à la demande)
     watchlist_changed = Signal()
     open_player = Signal(int)              # demande d'ouverture de la fiche joueur
     notice = Signal(str)                   # information à afficher dans le bandeau
@@ -45,6 +47,9 @@ class AppState(QObject):
         self.players = pd.DataFrame()
         self.team_matches = None  # None = pas encore demandé pour ce contexte
         self.big5 = None
+        self.profiles = None        # valeurs et contrats des effectifs actuels (None = rien de chargé)
+        self._profile_teams = set()  # équipes déjà chargées (ou en échec : pas de nouvel essai)
+        self._profiles_again, self._wanted_scope = False, "league"
         self._loading = set()
         self._loaded = set()  # données disponibles pour le contexte courant
         self._fresh = set()   # données déjà mises à jour depuis le réseau pour le contexte courant
@@ -54,7 +59,7 @@ class AppState(QObject):
     def signal(self, key: str):
         return {"context": self.context_changed, "standings": self.standings_changed,
                 "players": self.players_changed, "team_matches": self.team_matches_changed,
-                "big5": self.big5_changed}[key]
+                "big5": self.big5_changed, "profiles": self.profiles_changed}[key]
 
     def snapshot(self) -> dict:
         """Données déjà disponibles, dans l'ordre DATA_KEYS (pour une page créée après leur chargement)."""
@@ -64,6 +69,7 @@ class AppState(QObject):
             "players": ("players" in self._loaded, self.players),
             "team_matches": (self.team_matches is not None, self.team_matches),
             "big5": (self.big5 is not None, self.big5),
+            "profiles": (self.profiles is not None, self.profiles),
         }
         return {key: available[key][1] for key in DATA_KEYS if available[key][0]}
 
@@ -74,6 +80,10 @@ class AppState(QObject):
         self.players = pd.DataFrame()
         self.team_matches = None
         self._loading.discard("team_matches")
+        self.profiles = None
+        self._profile_teams = set()
+        self._profiles_again = False
+        self._loading.discard("profiles")
         self._loaded.clear()
         self._fresh.clear()
         self.context_changed.emit(ctx)
@@ -181,6 +191,88 @@ class AppState(QObject):
             self.runner.error.emit(message)
 
         self.runner.run("big5", job, done, failed)
+
+    # --- valeurs et contrats (effectifs actuels) ----------------------------------------
+    def profiles_available(self, scope: str) -> bool:
+        """Les effectifs ne décrivent que la saison en cours : rien pour une saison passée de la compétition
+        (le référentiel « 5 grands championnats » porte toujours sur la saison en cours)."""
+        pool = self.players_pool(scope)
+        if pool is None or pool.empty or "team_id" not in pool or pool.attrs.get("source") == "Understat":
+            return False
+        return scope == "big5" or (self.ctx is not None and self.ctx.latest)
+
+    def profiles_missing(self, scope: str) -> list[int]:
+        """Équipes du référentiel dont les valeurs et contrats n'ont pas encore été demandés."""
+        if not self.profiles_available(scope):
+            return []
+        teams = self.players_pool(scope)["team_id"].dropna().astype(int).unique()
+        return sorted(set(teams.tolist()) - self._profile_teams)
+
+    def request_profiles(self, scope: str = "league"):
+        """Charge les valeurs et contrats des équipes du référentiel (une requête par équipe, jamais au démarrage).
+
+        Deux temps comme au lancement : le cache (même expiré), puis la version à jour. Les deux tâches sont
+        enchaînées (et non parallèles) pour ne jamais demander deux fois la même équipe en même temps."""
+        teams = self.profiles_missing(scope)
+        if not teams:
+            return  # déjà chargées (ou saison passée) : les pages les reçoivent par profiles_changed
+        if "profiles" in self._loading:
+            self._profiles_again = True  # autre référentiel demandé pendant le chargement : à la suite
+            self._wanted_scope = scope
+            return
+        self._loading.add("profiles")
+        ctx, data = self.ctx, self.data
+
+        def merge(df):
+            if self.profiles is None:
+                return df
+            known = self.profiles[~self.profiles["player_id"].isin(df["player_id"])]
+            return pd.concat([known, df], ignore_index=True) if not known.empty else df
+
+        def from_cache(progress):
+            with data.cache_first():
+                return data.squad_profiles(teams, progress)
+
+        def on_cached(df):
+            if ctx != self.ctx:
+                return
+            missing = df.attrs.get("missing_teams", [])
+            self._profile_teams |= set(teams)
+            self.profiles = merge(df)
+            self.profiles_changed.emit(self.profiles)
+            if missing:
+                self.notice.emit(f"Valeurs et contrats incomplets : {len(missing)} équipe(s) sur {len(teams)} "
+                                 "indisponible(s) pour le moment.")
+            done_teams = [t for t in teams if t not in missing]
+            if done_teams:
+                self.runner.run("profiles", lambda progress: data.squad_profiles(done_teams, progress), on_fresh,
+                                finish)
+            else:
+                finish()
+
+        def on_fresh(df):
+            if ctx == self.ctx:
+                fresh = merge(df)
+                if not fresh.equals(self.profiles):
+                    self.profiles = fresh
+                    self.profiles_changed.emit(fresh)
+            finish()
+
+        def failed(message):
+            finish()
+            self.runner.error.emit(message)
+
+        def finish(*_):
+            self._loading.discard("profiles")
+            if self._profiles_again and ctx == self.ctx:
+                self._profiles_again = False
+                self.request_profiles(self._wanted_scope)
+
+        self.runner.run("profiles", from_cache, on_cached, failed)
+
+    def with_profiles(self, pool: pd.DataFrame | None) -> pd.DataFrame | None:
+        """Copie du référentiel avec valeurs, âges et contrats (l'état partagé n'est jamais modifié)."""
+        return self.data.add_profiles(pool, self.profiles)
 
     def players_pool(self, scope: str) -> pd.DataFrame | None:
         """'league' -> joueurs de la compétition courante ; 'big5' -> 5 grands championnats (None si pas chargé)."""

@@ -18,6 +18,7 @@ from ...config import ALL_PLAYER_METRICS, POSITIONS
 from ..widgets import Card, DataTable, icon, table_card, tool_button
 from . import Page, scope_combo
 from .players import metric_combo
+from .value import ProfileFilters, big5_hint, loading_hint, profile_columns
 
 MAX_CRITERIA = 8
 DEFAULT_CRITERIA = [("accurateFinalThirdPasses", 70), ("ballRecovery", 70)]
@@ -67,6 +68,7 @@ class ScoutingPage(Page):
         for code, label in POSITIONS.items():
             self.position.addItem(label, code)
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=450, suffix=" min")
+        self.filters = ProfileFilters()
         self.saved = QComboBox()
         self.saved.setMinimumWidth(180)
         save = tool_button("Enregistrer", "fa5s.save")
@@ -78,6 +80,11 @@ class ScoutingPage(Page):
         row.addStretch()
         for w in (QLabel("Recherches"), self.saved, save, delete):
             row.addWidget(w)
+        top.body.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Profil"))
+        row.addWidget(self.filters)
+        row.addStretch()
         top.body.addLayout(row)
         self.body.addWidget(top)
 
@@ -107,11 +114,14 @@ class ScoutingPage(Page):
         self.scope.currentIndexChanged.connect(self._on_scope)
         self.position.currentIndexChanged.connect(self.run)
         self.min_minutes.valueChanged.connect(self.run)
+        self.filters.changed.connect(self.run)
+        self.filters.load_requested.connect(lambda: self.state.request_profiles(self.scope.currentData()))
         self.saved.activated.connect(self._apply_saved)
         save.clicked.connect(self._save)
         delete.clicked.connect(self._delete)
         self.bind("players", lambda df: self.run())
         self.bind("big5", lambda df: self.run())
+        self.bind("profiles", lambda df: self.run())
 
     # --- critères ------------------------------------------------------------------
     def _add_row(self, key="keyPasses", threshold=70):
@@ -143,10 +153,27 @@ class ScoutingPage(Page):
         self.run()
 
     def run(self):
-        pool = self.state.players_pool(self.scope.currentData())
+        scope = self.scope.currentData()
+        pool = self.state.players_pool(scope)
+        self.filters.set_available(scope == "big5" or self.ctx is None or self.ctx.latest)
+        self.filters.load.hide()
         if pool is None or pool.empty:
             self.table.set_dataframe(pd.DataFrame())
             return
+        # valeurs et contrats : chargés seulement quand un filtre âge / valeur / contrat est utilisé
+        filtering = self.filters.active() and self.state.profiles_available(scope)
+        missing = self.state.profiles_missing(scope) if filtering else []
+        if missing:
+            self.table.set_dataframe(pd.DataFrame())
+            if scope == "big5":  # ~100 requêtes : uniquement sur demande explicite
+                self.filters.load.show()
+                self.status.setText(big5_hint(len(missing)))
+            else:
+                self.state.request_profiles(scope)
+                self.status.setText(loading_hint(len(missing)))
+            return
+        if self.state.profiles is not None and self.state.profiles_available(scope):
+            pool = self.state.with_profiles(pool)
         criteria = [r.value() for r in self.rows if r.value()[0]]
         pool = pool[pool["minutesPlayed"] >= self.min_minutes.value()]
         found = scout(per90(pool), criteria)
@@ -155,16 +182,20 @@ class ScoutingPage(Page):
             found = found[found["pos"] != "G"]
         elif position and not found.empty:
             found = found[found["pos"] == position]
+        if filtering:
+            found = self.filters.apply(found)
         if found.empty:
             self.table.set_dataframe(pd.DataFrame())
             self.status.setText(f"Aucun joueur ne remplit tous les critères ({len(pool)} joueurs analysés) : "
-                                "abaissez un seuil.")
+                                + ("abaissez un seuil ou élargissez les filtres âge / valeur / contrat."
+                                   if filtering else "abaissez un seuil."))
             return
         cols = {"player": "Joueur", "team": "Équipe", "position": "Poste", "minutesPlayed": "Minutes"}
         if "league" in found:
             cols["league"] = "Championnat"
         view = found[list(cols)].rename(columns=cols)
         view.insert(len(cols), "Score", found["score"].round(1))
+        view = view.join(profile_columns(found))
         for key in dict.fromkeys(k for k, _ in criteria):
             label, _, kind = ALL_PLAYER_METRICS[key]
             view[label + (" /90" if kind == "count" else "")] = found[key]
@@ -172,7 +203,9 @@ class ScoutingPage(Page):
         view["player_id"], view["team_id"] = found["player_id"], found["team_id"]
         self.table.set_dataframe(view.head(200))
         self.status.setText(f"{len(found)} joueurs sur {len(pool)} remplissent les {len(criteria)} critères"
-                            + (" (200 premiers affichés)" if len(found) > 200 else ""))
+                            + (" (200 premiers affichés)" if len(found) > 200 else "")
+                            + (" · filtres âge / valeur / contrat appliqués (valeurs estimées Sofascore)"
+                               if filtering else ""))
 
     # --- recherches enregistrées ------------------------------------------------------
     def _searches(self) -> dict:
@@ -193,7 +226,8 @@ class ScoutingPage(Page):
             return
         searches = self._searches()
         searches[name.strip()] = {"criteria": [r.value() for r in self.rows], "position": self.position.currentData(),
-                                  "min_minutes": self.min_minutes.value(), "scope": self.scope.currentData()}
+                                  "min_minutes": self.min_minutes.value(), "scope": self.scope.currentData(),
+                                  "profile_filters": self.filters.settings()}
         self.state.settings.setValue("searches", json.dumps(searches))
         self._load_saved_list()
         self.saved.setCurrentIndex(self.saved.findData(name.strip()))
@@ -206,6 +240,7 @@ class ScoutingPage(Page):
         self.position.setCurrentIndex(max(0, self.position.findData(s.get("position"))))
         self.min_minutes.setValue(s.get("min_minutes", 450))
         self.scope.setCurrentIndex(max(0, self.scope.findData(s.get("scope", "league"))))
+        self.filters.restore(s.get("profile_filters"))
         self._on_scope()
 
     def _delete(self):

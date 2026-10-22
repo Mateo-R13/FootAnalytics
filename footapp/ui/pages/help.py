@@ -45,6 +45,12 @@ GLOSSARY = [
     ("Similarité", "100 - écart moyen de centiles sur le profil du poste : 90 % = en moyenne 10 centiles d'écart "
      "par métrique."),
     ("Indice personnalisé", "Moyenne pondérée de centiles (calculés au sein de chaque poste), de 0 à 100."),
+    ("Valeur estimée", "Valeur marchande estimée par Sofascore (pas un prix de transfert), avec l'âge et la fin de "
+     "contrat issus des effectifs actuels : disponibles pour la saison en cours uniquement."),
+    ("Sous-évalué / surévalué", "Page Valeur vs performance : score attendu d'après la valeur estimée (échelle "
+     "logarithmique), le poste et l'âge, par une régression robuste (Huber) ; z = écart au score attendu en écarts "
+     "types robustes. Le R² affiché indique la part du score expliquée par la valeur (souvent faible en début de "
+     "saison) : un z élevé est une piste à vérifier, pas un verdict."),
     ("PPDA", "Passes adverses par action défensive (tacles, interceptions, fautes). Bas = pressing intense. "
      "Officiel (Understat) pour les 5 grands championnats, approximé ailleurs."),
     ("Pronostics", "Modèle de Poisson : forces d'attaque et de défense calculées sur les xG de la saison, avantage du "

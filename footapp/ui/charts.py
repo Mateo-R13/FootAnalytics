@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 
 from ..config import SHOT_BODY_PARTS, SHOT_OUTCOMES, SHOT_SITUATIONS
 from . import pitch, theme
@@ -86,6 +87,51 @@ def scatter(chart: ChartWidget, df: pd.DataFrame, x: str, y: str, name_col: str,
               + f"\n{x} : {_num(r[x])}\n{y} : {_num(r[y])}" for _, r in df.iterrows()]
     chart.add_hover(ax, pts, labels)
     _title(ax, title, subtitle or "Lignes pointillées : moyenne de l'échantillon · survolez un point")
+    chart.draw()
+
+
+def _plain(text) -> str:
+    """Texte venu de l'API affiché tel quel par matplotlib (pas d'interprétation mathtext des « $ »)."""
+    return str(text).replace("$", r"\$")
+
+
+def value_scatter(chart: ChartWidget, df: pd.DataFrame, score_label: str, title: str, subtitle: str,
+                  curve: tuple | None = None, n_top: int = 6, n_bottom: int = 3):
+    """Valeur estimée (M€, échelle log) vs score. df : player, team, value, score, expected, z.
+
+    Couleur selon l'écart à la performance attendue (z) ; curve = (valeurs en €, scores attendus) éventuel."""
+    fig = chart.clear()
+    df = df.dropna(subset=["value", "score", "z"]).reset_index(drop=True)
+    if df.empty:
+        return chart.message("Aucun joueur pour ces filtres")
+    ax = fig.add_subplot()
+    xs, ys, z = df["value"].astype(float) / 1e6, df["score"].astype(float), df["z"].astype(float)
+    colors = np.where(z >= 1, theme.DIV_HIGH, np.where(z <= -1, theme.DIV_LOW, theme.DIV_MID))
+    pts = ax.scatter(xs, ys, s=34, c=list(colors), alpha=0.85, edgecolor=theme.SURFACE, linewidth=0.8, zorder=2)
+    if curve is not None:
+        cx, cy = curve
+        ax.plot(np.asarray(cx) / 1e6, cy, color=theme.INK2, lw=1.4, ls="--", zorder=1,
+                label="Score attendu (âge médian)")
+    ax.set_xscale("log")
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.grid(True, which="major")
+    ax.set_axisbelow(True)
+    ax.set_xlabel("Valeur estimée Sofascore (M€, échelle logarithmique)")
+    ax.set_ylabel(score_label)
+    for i in list(z.nlargest(n_top).index) + list(z.nsmallest(n_bottom).index):
+        ax.annotate(_plain(df.at[i, "player"]), (xs[i], ys[i]), xytext=(5, 4), textcoords="offset points",
+                    fontsize=8, color=theme.INK)
+    labels = [f"{_plain(r.player)} ({_plain(r.team)})\nValeur : {r.value / 1e6:.1f} M€\n"
+              f"{score_label} : {_num(r.score)} · attendu {_num(r.expected)}\nÉcart : {r.z:+.1f} (z)"
+              for r in df.itertuples()]
+    chart.add_hover(ax, pts, labels)
+    handles = [Line2D([], [], ls="", marker="o", color=theme.DIV_HIGH, label="Au-dessus de l'attendu (z ≥ 1)"),
+               Line2D([], [], ls="", marker="o", color=theme.DIV_MID, label="Dans la norme"),
+               Line2D([], [], ls="", marker="o", color=theme.DIV_LOW, label="En dessous (z ≤ -1)")]
+    if curve is not None:
+        handles.append(Line2D([], [], ls="--", color=theme.INK2, label="Score attendu (âge médian)"))
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=len(handles), fontsize=8)
+    _title(ax, title, subtitle)
     chart.draw()
 
 
