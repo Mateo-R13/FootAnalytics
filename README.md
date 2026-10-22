@@ -12,7 +12,7 @@ Python + PySide6, pour Windows (installeur), macOS (Apple Silicon) et Linux (th�
 |---|---|
 | **Tableau de bord** | Chiffres clés de la compétition, top 5 par métrique (buts, xG, passes clés, dribbles, actions défensives, notes, gardiens), finition buts vs xG |
 | **Classement** | Classement avec logos, **classement xG** (points attendus xPts, chance / malchance, PPDA officiel), attaque vs défense, points par match |
-| **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
+| **Matchs** | Par journée (par semaine pour les saisons sans journées chez Sofascore, comme la MLS 2026) : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
 | **Pronostics** | Probabilités 1 / N / 2 des prochains matchs (modèle de Poisson / Dixon-Coles ajusté par maximum de vraisemblance sur xG et buts, matchs récents favorisés, saison précédente en point de départ pour les 5 grands championnats), matrice des scores, simulation de n'importe quelle affiche, **fiabilité du modèle** (rejoué sur les matchs passés : taux de réussite, score de Brier, log-loss, calibration, comparaison avec l'ancien modèle et une référence naïve) |
 | **Avant-match** | Depuis Pronostics (bouton ou double-clic) : pronostic du modèle, classement et rang xPts, bilan domicile / extérieur, forme des deux équipes, repos et derniers matchs toutes compétitions, **profils comparés** (radar), **joueurs clés** croisés avec les **absents annoncés**, XI probable (estimations Sofascore), **10 dernières confrontations**, badge « fiabilité réduite » sous 5 matchs joués, **rapport PDF** (~7 pages, sans cotes de bookmakers) |
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
@@ -26,13 +26,18 @@ Python + PySide6, pour Windows (installeur), macOS (Apple Silicon) et Linux (th�
 
 Graphiques interactifs : survol = détail, barre d'outils = zoom et export PNG.
 Double-clic sur un joueur dans n'importe quel tableau → sa fiche. **Ctrl+K** : recherche globale (joueurs, équipes, pages).
-Matchs en cours actualisés automatiquement (mode direct). Rapports PDF de fiches joueurs et de matchs.
+Matchs en cours actualisés automatiquement (mode direct). Rapports PDF de fiches joueurs, de matchs et d'avant-match.
 La compétition, la saison et la page ouvertes sont retrouvées au lancement suivant ; l'appli signale les nouvelles versions publiées.
+Utilisable sur un écran 1920 x 1080 à 150 % (fenêtre de 1280 x 650 : les pages défilent au lieu de se tasser).
 
 <p>
   <img src="docs/screenshots/classement-xg.png" width="49%">
   <img src="docs/screenshots/pronostics.png" width="49%">
+  <img src="docs/screenshots/valeur-performance.png" width="49%">
+  <img src="docs/screenshots/avant-match.png" width="49%">
   <img src="docs/screenshots/fiabilite-pronostics.png" width="49%">
+  <img src="docs/screenshots/tirs-heatmap.png" width="49%">
+  <img src="docs/screenshots/historique-equipe.png" width="49%">
   <img src="docs/screenshots/indices.png" width="49%">
   <img src="docs/screenshots/comparaison-equipes.png" width="49%">
   <img src="docs/screenshots/recherche-avancee.png" width="49%">
@@ -95,7 +100,7 @@ Sous macOS et Linux :
 # Linux -> dist/FootAnalytics/ et dist/FootAnalytics-<version>-linux-x86_64.tar.gz
 ```
 Le workflow GitHub Actions (`.github/workflows/build.yml`) le fait automatiquement à chaque push sur `main`, sur
-Windows, macOS et Linux (tests sur les trois systèmes) ; pousser un tag `v*` (ex. `git tag v2.4.0 && git push --tags`)
+Windows, macOS et Linux (tests sur les trois systèmes) ; pousser un tag `v*` (ex. `git tag v2.5.0 && git push --tags`)
 publie l'installeur et les archives des trois systèmes dans une Release.
 L'icône (`.png`, `.ico`, `.icns`) se régénère avec `python tools\make_icon.py`.
 

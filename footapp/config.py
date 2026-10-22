@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 APP_NAME = "FootAnalytics"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 GITHUB_REPO = "Mateo-R13/FootAnalytics"
 
 
