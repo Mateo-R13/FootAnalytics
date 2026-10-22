@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1500, 940)
-        self.setMinimumSize(1200, 760)
+        self.setMinimumSize(1200, 600)  # écran 1920x1080 à 150 % : ~1280x650 utiles
         self.setWindowIcon(QIcon(str(resource_path("assets/icon.png"))))
 
         # sources de données injectables (tests : réponses enregistrées, sans réseau)

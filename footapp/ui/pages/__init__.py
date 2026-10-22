@@ -1,9 +1,12 @@
-from PySide6.QtWidgets import QComboBox, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QComboBox, QFrame, QScrollArea, QVBoxLayout, QWidget
 
 from .. import theme
 from ..state import DATA_KEYS
 from ..widgets import PageHeader
 
+# hauteur en dessous de laquelle une page défile au lieu d'écraser graphiques et tableaux (petits écrans)
+PAGE_MIN_HEIGHT = 600
 BIG5_LOADING = "Chargement des 5 grands championnats… (environ 40 requêtes la première fois)"
 
 
@@ -13,6 +16,16 @@ def scope_combo(league: str = "Compétition actuelle", big5: str = "5 grands cha
     box.addItem(league, "league")
     box.addItem(big5, "big5")
     return box
+
+
+class _PageContent(QWidget):
+    """Contenu d'une page dans sa zone de défilement : hauteur libre au-dessus de PAGE_MIN_HEIGHT.
+
+    Sans cela, la zone de défilement prendrait la hauteur « idéale » des textes renvoyés à la ligne
+    (hauteur selon la largeur) comme minimum, et ferait défiler des pages qui tiennent à l'écran."""
+
+    def hasHeightForWidth(self) -> bool:
+        return False
 
 
 class Page(QWidget):
@@ -33,7 +46,21 @@ class Page(QWidget):
         self.accent = theme.ACCENTS[self.key]
         self._handlers: dict[str, list] = {}
         self._pending: dict[str, object] = {}
-        layout = QVBoxLayout(self)
+        content = _PageContent()
+        content.setMinimumHeight(PAGE_MIN_HEIGHT)
+        holder = QWidget()  # la zone de défilement interroge la mise en page de son widget
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(content)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(holder)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
         self.header = PageHeader(self.title, self.subtitle, self.icon_name, self.accent)

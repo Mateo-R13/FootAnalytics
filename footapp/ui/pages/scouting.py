@@ -70,14 +70,14 @@ class ScoutingPage(Page):
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=450, suffix=" min")
         self.filters = ProfileFilters()
         self.role = QComboBox()
-        self.role.setMinimumWidth(220)
+        self.role.setMinimumWidth(190)
         self.role.setToolTip("Profil type : regroupement statistique des joueurs d'un même poste selon leur style "
                              "de jeu (voir la fiche joueur, onglet « Profil type »). Le calcul démarre au premier "
                              "choix.")
         self.role.addItem("Tous les profils types", None)
         self._role_wanted = None  # profil choisi (gardé si la liste est recalculée)
         self.saved = QComboBox()
-        self.saved.setMinimumWidth(180)
+        self.saved.setMinimumWidth(150)
         save = tool_button("Enregistrer", "fa5s.save")
         delete = tool_button("", "fa5s.trash-alt", "Supprimer la recherche sélectionnée")
         top = Card(margins=10)

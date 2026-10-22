@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QSpinBox,
     QSplitter,
@@ -28,6 +29,9 @@ MIN_PLAYERS = 30
 PAST_SEASON = ("Valeurs et contrats disponibles pour la saison en cours uniquement : les effectifs fournis par "
                "Sofascore sont ceux d'aujourd'hui.")
 UNDERSTAT = "Valeurs et contrats indisponibles avec la source de secours Understat."
+# onglets « Sous / Surévalués » : colonnes essentielles (le détail reste dans l'onglet « Tous » et l'export)
+COMPACT_HIDDEN = ("player_id", "team_id", "Championnat", "Postes", "Âge", "Fin de contrat", "Minutes", "Attendu",
+                  "Écart", "Pied", "Taille", "Nationalité")
 
 
 def big5_hint(n_teams: int) -> str:
@@ -178,9 +182,9 @@ class ValuePage(Page):
                                                 for t in (self.under_table, self.over_table, self.all_table)])
         results = QSplitter(Qt.Orientation.Horizontal)
         results.addWidget(chart_card(self.chart, "Valeur estimée vs score",
-                                     "survolez un point · z = écart à l'attendu en écarts types robustes"))
+                                     "z = écart à l'attendu (écarts types robustes)"))
         results.addWidget(self.tabs)
-        results.setSizes([560, 720])
+        results.setSizes([520, 720])
         self.body.addWidget(results, 1)
         self.status = named(QLabel(), "Muted")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -292,8 +296,15 @@ class ValuePage(Page):
 
         view = self._view(shown)
         n = 25
-        self.under_table.set_dataframe(view[view["z"] > 0].head(n))
-        self.over_table.set_dataframe(view[view["z"] < 0].iloc[::-1].head(n))
+        for table, part in ((self.under_table, view[view["z"] > 0].head(n)),
+                            (self.over_table, view[view["z"] < 0].iloc[::-1].head(n))):
+            table.set_dataframe(part, hidden=COMPACT_HIDDEN)
+            # noms et équipes se partagent la largeur restante (texte abrégé) : pas de défilement horizontal
+            header = table.horizontalHeader()
+            for i, col in enumerate(part.columns):
+                stretch = col in ("Joueur", "Équipe")
+                header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if stretch
+                                            else QHeaderView.ResizeMode.Interactive)
         self.all_table.set_dataframe(view)
 
         scope_label = "5 grands championnats" if scope == "big5" else self.ctx.label

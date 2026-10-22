@@ -19,8 +19,8 @@ class ComparePage(Page):
 
     def __init__(self, state):
         super().__init__(state)
-        self.p1 = player_combo()
-        self.p2 = player_combo()
+        self.p1 = player_combo(220)  # deux sélecteurs sur une rangée : tient dans une fenêtre de 1280 px
+        self.p2 = player_combo(220)
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=270, suffix=" min")
         self.scope = scope_combo()
         self.scope.setToolTip("Référentiel des joueurs comparables (centiles, nuage de points)")

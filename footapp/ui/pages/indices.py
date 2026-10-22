@@ -91,7 +91,9 @@ class IndicesPage(Page):
         row = QHBoxLayout()
         for w in (QLabel("Indice"), self.index_box, new, save, delete):
             row.addWidget(w)
-        row.addSpacing(16)
+        row.addStretch()
+        top.body.addLayout(row)
+        row = QHBoxLayout()  # seconde rangée : tient dans une fenêtre de 1280 px
         for widget in (QLabel("Référentiel"), self.scope, self.position, QLabel("Min."), self.min_minutes):
             row.addWidget(widget)
         row.addStretch()
@@ -224,10 +226,8 @@ class IndicesPage(Page):
         pool = pool[pool["minutesPlayed"] >= self.min_minutes.value()]
         ranked = composite_index(per90(pool), components)
         position = self.position.currentData()
-        if position == "outfield":
-            ranked = ranked[ranked["pos"] != "G"]
-        elif position:
-            ranked = ranked[ranked["pos"] == position]
+        if position and not ranked.empty:  # vide : personne au-dessus du temps de jeu minimum
+            ranked = ranked[ranked["pos"] != "G"] if position == "outfield" else ranked[ranked["pos"] == position]
         if ranked.empty:
             self.table.set_dataframe(pd.DataFrame())
             return self.chart.message("Aucun joueur pour ces filtres")

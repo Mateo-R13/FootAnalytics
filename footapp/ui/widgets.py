@@ -106,6 +106,7 @@ class KpiTile(QFrame):
         self.sub = named(QLabel(""), "KpiSub")
         for text in (self.value, self.sub):  # peuvent afficher des noms venus de l'API : jamais de HTML
             text.setTextFormat(Qt.TextFormat.PlainText)
+        self.sub.setWordWrap(True)  # fenêtre étroite : sous-texte sur deux lignes plutôt que tuiles chevauchées
         lay.addWidget(self.value)
         lay.addWidget(self.sub)
 
@@ -298,7 +299,8 @@ class ChartWidget(QWidget):
 
     def message(self, text: str):
         fig = self.clear()
-        fig.text(0.5, 0.5, text, ha="center", va="center", color=theme.MUTED, fontsize=11)
+        fig.text(0.5, 0.5, text, ha="center", va="center", color=theme.MUTED, fontsize=11,
+                 wrap=True)  # message long : renvoyé à la ligne dans la largeur du graphique
         self.draw()
 
     def add_hover(self, ax, collection, labels: list[str]):

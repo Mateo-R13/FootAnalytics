@@ -49,7 +49,7 @@ class PlayersPage(Page):
 
         self.search = QLineEdit(placeholderText="Rechercher un joueur…")
         self.search.addAction(icon("fa5s.search", "#7d8396"), QLineEdit.ActionPosition.LeadingPosition)
-        self.search.setMinimumWidth(220)
+        self.search.setMinimumWidth(160)
         self.position = combo(["Tous les postes", *POSITIONS.values()], [None, *POSITIONS])
         self.team = combo(["Toutes les équipes"], [None])
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=270, suffix=" min")

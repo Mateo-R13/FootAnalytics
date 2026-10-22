@@ -134,6 +134,11 @@ def test_valeur_vs_performance(qapp, window):
     over = page.over_table.model_.dataframe()
     assert not under.empty and not over.empty
     assert (under["z"] > 0).all() and (over["z"] < 0).all()
+    # onglets sous / surévalués compacts (le détail reste dans « Tous » et l'export)
+    def shown(table):
+        return list(table.visible_dataframe().columns)
+    assert "Nationalité" not in shown(page.under_table) and "z" in shown(page.under_table)
+    assert "Nationalité" in shown(page.all_table)
     assert "R²" in page.status.text() and "pas un verdict" in page.status.text()
     assert page.chart.figure.axes and page.chart.figure.axes[0].get_xscale() == "log"
     # cache d'abord puis frais, enchaînés : chaque équipe demandée deux fois au plus, jamais en parallèle
@@ -152,6 +157,32 @@ def test_valeur_vs_performance(qapp, window):
     w.state.open_player.connect(opened.append)
     page.under_table.row_activated.emit(page.under_table.model_.dataframe().iloc[0])
     assert opened
+    assert not crashes and not errors, (crashes, errors)
+
+
+
+
+def test_matchs_vides_au_changement_de_competition(qapp, window):
+    """Le match de la compétition précédente ne reste pas affiché pendant le chargement de la suivante."""
+    w, errors, crashes = window
+    w.show_page("matches")
+    wait_idle(qapp, w)
+    page = w.page("matches")
+    assert page.bundle and page.home_name.text()
+    page.set_context(w.state.ctx)
+    assert page.bundle is None and not page.home_name.text() and page.score.text() == "-"
+    wait_idle(qapp, w)
+    assert page.bundle and page.home_name.text()  # puis le dernier match joué est rechargé
+    assert not crashes and not errors, (crashes, errors)
+
+def test_indices_sans_joueur_au_dessus_du_minimum(qapp, window):
+    w, errors, crashes = window
+    w.show_page("indices")
+    wait_idle(qapp, w)
+    page = w.page("indices")
+    page.min_minutes.setValue(page.min_minutes.maximum())  # personne (début de saison, coupe d'Europe)
+    wait_idle(qapp, w)
+    assert page.table.model_.dataframe().empty
     assert not crashes and not errors, (crashes, errors)
 
 
@@ -418,3 +449,21 @@ def test_tailles_de_police_adaptees_a_macos():
     assert theme._scale_points(qss, 1) == qss
     assert theme._scale_points(qss, 4 / 3) == "QLabel { font-size: 12pt; } #A { font-size: 14pt; padding: 4px; }"
     assert theme.UI_FONT in theme.stylesheet()
+
+
+def test_avant_match_classement_par_conference_une_ligne_par_equipe():
+    """MLS : classements de conférence puis d'ensemble ; l'avant-match garde la conférence, une ligne par équipe."""
+    from datetime import datetime
+
+    import pandas as pd
+
+    from footapp.ui.pages.prematch import compose
+
+    standings = pd.DataFrame({
+        "Groupe": ["Est", "Est", "Ensemble", "Ensemble"], "Pos": [1, 15, 1, 29], "Équipe": ["A", "B", "A", "B"],
+        "J": [30] * 4, "Pts": [67, 25, 67, 25], "Diff": [23, -24, 23, -24], "BP": [64, 36] * 2, "BC": [41, 60] * 2,
+        "team_id": [1, 2, 1, 2]})
+    event = {"id": 9, "home": "A", "away": "B", "home_id": 1, "away_id": 2, "date": datetime(2026, 10, 24, 19)}
+    c = compose(event, None, None, {}, standings, pd.DataFrame(), None, None)
+    table = c["standings"]
+    assert list(table["Équipe"]) == ["A", "B"] and list(table["Groupe"]) == ["Est", "Est"]

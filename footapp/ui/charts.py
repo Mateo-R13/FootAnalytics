@@ -178,7 +178,8 @@ def value_scatter(chart: Chart, df: pd.DataFrame, score_label: str, title: str, 
                Line2D([], [], ls="", marker="o", color=theme.DIV_LOW, label="En dessous (z ≤ -1)")]
     if curve is not None:
         handles.append(Line2D([], [], ls="--", color=theme.INK2, label="Score attendu (âge médian)"))
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=len(handles), fontsize=8)
+    # légende sous la figure, placée par la mise en page (ne chevauche pas le titre de l'axe x)
+    fig.legend(handles=handles, loc="outside lower center", ncol=2, fontsize=8)
     _title(ax, title, subtitle)
     chart.draw()
 
@@ -375,7 +376,8 @@ def season_evolution(chart: Chart, evo: pd.DataFrame, metric_label: str, title: 
     ax.set_ylabel(metric_label)
     ax.yaxis.grid(True)
     ax.set_axisbelow(True)
-    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=len(handles), fontsize=8)
+    # légende sous la figure, placée par la mise en page (ne chevauche pas le titre de l'axe x)
+    fig.legend(handles=handles, loc="outside lower center", ncol=len(handles), fontsize=8)
     _title(ax, title, subtitle)
     chart.draw()
 

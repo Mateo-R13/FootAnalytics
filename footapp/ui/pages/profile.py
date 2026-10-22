@@ -63,7 +63,7 @@ PLURALS = {"D": "défenseurs", "M": "milieux", "F": "attaquants"}
 EVOLUTION_METRICS = {k: v for k, v in ALL_PLAYER_METRICS.items() if v[2] != "info" and v[1] != "Physique"}
 
 
-def player_combo() -> QComboBox:
+def player_combo(min_width: int = 320) -> QComboBox:
     box = QComboBox()
     box.setEditable(True)
     box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -71,7 +71,7 @@ def player_combo() -> QComboBox:
     assert completer is not None and edit is not None  # créés par setEditable(True)
     completer.setFilterMode(Qt.MatchFlag.MatchContains)
     completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-    box.setMinimumWidth(320)
+    box.setMinimumWidth(min_width)
     edit.setPlaceholderText("Rechercher un joueur…")
     return box
 
