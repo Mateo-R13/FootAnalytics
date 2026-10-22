@@ -67,6 +67,37 @@ def test_ouverture_d_une_fiche_joueur(qapp, window, meta):
     assert not crashes and not errors, (crashes, errors)
 
 
+def _open_shots_tab(qapp, w, pid):
+    w.state.open_player.emit(pid)
+    wait_idle(qapp, w)
+    profile = w.page("profile")
+    profile.tabs.setCurrentWidget(profile.shots_tab)
+    wait_idle(qapp, w)
+    return profile
+
+
+def test_onglet_tirs_et_heatmap(qapp, window, meta, tmp_path):
+    w, errors, crashes = window
+    profile = _open_shots_tab(qapp, w, meta["shooter_id"])
+    assert profile.shot_chart.figure.axes and profile.season_heat_chart.figure.axes
+    assert not profile.shots_table.model_.dataframe().empty
+    assert profile.shot_kpis["shots"].value.text() not in ("", "-")
+    pdf = tmp_path / "f.pdf"
+    profile._write_pdf(str(pdf))
+    assert pdf.stat().st_size > 10_000
+    assert not crashes and not errors, (crashes, errors)
+
+
+def test_onglet_tirs_gardien(qapp, window):
+    w, errors, crashes = window
+    players = w.state.players
+    gk = int(players[players["pos"] == "G"].iloc[0]["player_id"])
+    profile = _open_shots_tab(qapp, w, gk)
+    assert profile.shot_chart.figure.texts and not profile.shot_chart.figure.axes  # message, pas de carte
+    assert profile.shots_table.model_.dataframe().empty
+    assert not crashes and not errors, (crashes, errors)
+
+
 def test_heatmap_orientation(qapp):
     """Sofascore : y vers la gauche de l'équipe ; sens du jeu vers la droite -> gauche en haut."""
     import numpy as np

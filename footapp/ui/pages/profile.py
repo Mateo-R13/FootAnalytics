@@ -15,7 +15,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...analysis import per90, percentiles, rank_in, similar_players
+from ...analysis import (
+    per90,
+    percentiles,
+    pooled_shot_quality,
+    rank_in,
+    shot_breakdown,
+    shot_summary,
+    similar_players,
+)
 from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
 from .. import charts, report
 from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, rounded_pixmap, table_card, tool_button
@@ -46,6 +54,10 @@ def fill_player_combo(box: QComboBox, df: pd.DataFrame, with_none=False):
     box.blockSignals(False)
 
 
+def fmt_pct(v) -> str:
+    return "-" if v is None or pd.isna(v) else f"{v:.0f} %"
+
+
 def fmt(v, decimals=2) -> str:
     if v is None or pd.isna(v):
         return "-"
@@ -55,8 +67,8 @@ def fmt(v, decimals=2) -> str:
 class ProfilePage(Page):
     key = "profile"
     title = "Fiche joueur"
-    subtitle = ("Identité, profil en centiles par rapport aux joueurs du même poste, forme match par match "
-                "et stats complètes")
+    subtitle = ("Identité, profil en centiles par rapport aux joueurs du même poste, forme match par match, "
+                "tirs et heatmap de la saison, stats complètes")
     icon_name = "fa5s.id-card"
 
     def __init__(self, state):
@@ -160,15 +172,48 @@ class ProfilePage(Page):
         career.setSizes([340, 300])
         self._career_for = None
 
+        # tirs & heatmap de la saison : chargés à l'ouverture de l'onglet (2 requêtes par joueur-saison)
+        self.shot_kpis = {k: KpiTile(label, color) for k, label, color in [
+            ("shots", "Tirs", "#64748b"), ("npxg", "npxG", "#f97316"),
+            ("npxg_per_shot", "xG / tir hors pen.", "#eab308"), ("on_target_pct", "% cadrés", "#06b6d4"),
+            ("np_conversion", "Conversion hors pen.", "#22c55e"), ("xgot_minus_xg", "xGOT - xG", "#ec4899")]}
+        shot_kpi_row = QHBoxLayout()
+        shot_kpi_row.setSpacing(8)
+        for tile in self.shot_kpis.values():
+            tile.value.setStyleSheet("font-size: 15pt;")
+            shot_kpi_row.addWidget(tile)
+        self.shot_chart = ChartWidget()
+        self.season_heat_chart = ChartWidget()
+        self.shots_table = DataTable()
+        maps = QSplitter(Qt.Horizontal)
+        maps.addWidget(chart_card(self.shot_chart))
+        maps.addWidget(chart_card(self.season_heat_chart))
+        maps.setSizes([520, 560])
+        shots_split = QSplitter(Qt.Vertical)
+        shots_split.addWidget(maps)
+        shots_split.addWidget(table_card(self.shots_table, "Répartition des tirs",
+                                         "par situation, surface de contact et zone"))
+        shots_split.setSizes([430, 220])
+        self.shots_tab = QWidget()
+        sl = QVBoxLayout(self.shots_tab)
+        sl.setContentsMargins(0, 6, 0, 0)
+        sl.addLayout(shot_kpi_row)
+        sl.addWidget(shots_split, 1)
+        self._shots_for = None    # (joueur, compétition, saison) demandé
+        self._shots_done = None   # ... dont le résultat est affiché
+        self._shots = None
+
         self.tabs = QTabWidget()
         self.tabs.addTab(chart_card(self.pct_chart), "Profil (centiles)")
         self.tabs.addTab(form, "Forme match par match")
+        self.tabs.addTab(self.shots_tab, "Tirs && heatmap")  # && : « & » littéral (pas de raccourci)
         self.tabs.addTab(similar, "Profils similaires")
         self.tabs.addTab(career, "Carrière")
         self.tabs.addTab(table_card(self.all_table, "Toutes les statistiques",
                                     "total, par 90 min, centile et rang au poste"), "Toutes les stats")
         self.career_tab = career
         self.tabs.currentChanged.connect(self._maybe_load_career)
+        self.tabs.currentChanged.connect(self._maybe_load_shots)
 
         right = QVBoxLayout()
         right.setSpacing(10)
@@ -274,6 +319,7 @@ class ProfilePage(Page):
         self._fill_similar()
         self._career_for = None
         self._maybe_load_career()
+        self._maybe_load_shots()
 
         self.form_chart.message("Chargement des matchs…")
         self.state.runner.run("profile_info", lambda progress: self.state.data.player_info(pid), self._on_info)
@@ -369,6 +415,93 @@ class ProfilePage(Page):
         self.career_table.set_dataframe(df, hidden=("_start",))
         charts.career(self.career_chart, df, f"Évolution de {name}")
 
+    # --- tirs & heatmap de la saison ---------------------------------------------
+    def _shots_key(self, p) -> tuple:
+        return int(p.player_id), self.ctx.ut, self.ctx.sid
+
+    def _maybe_load_shots(self, *_):
+        p = self._row()
+        if p is None or self.tabs.currentWidget() is not self.shots_tab:
+            return
+        key = self._shots_key(p)
+        if key == self._shots_done == self._shots_for:
+            self._fill_shot_kpis(p, self._shots)  # le référentiel (minutes min.) a pu changer
+        elif key != self._shots_for:
+            self._load_shots(p)
+
+    def _load_shots(self, p, then=None):
+        """Tirs (sauf gardien / joueur sans tir / joueur Understat) + heatmap de la saison, en arrière-plan."""
+        key = self._shots_key(p)
+        pid, ut, sid = key
+        name, data = p.player, self.state.data
+        no_shots = pd.notna(p.totalShots) and p.totalShots == 0
+        skip_shots = p.pos == "G" or no_shots or pid < 0
+        self._shots_for = key
+        self.shot_chart.message("Chargement des tirs…")
+        self.season_heat_chart.message("Chargement de la heatmap…")
+        self.shots_table.set_dataframe(pd.DataFrame())
+        for tile in self.shot_kpis.values():
+            tile.set("-", "")
+
+        def job(progress):
+            shots = None
+            if not skip_shots:
+                progress(f"Tirs de la saison : {name}")
+                shots = data.player_shots(pid, ut, sid)
+            heat = pd.DataFrame(columns=["x", "y"])
+            if pid >= 0:  # identifiants négatifs = joueurs Understat (secours) : pas de ressource Sofascore
+                progress(f"Heatmap de la saison : {name}")
+                heat = data.player_season_heatmap(pid, ut, sid)
+            return shots, heat
+
+        def done(result):
+            if self._on_shots(key, p, *result) and then is not None:
+                then()
+
+        self.state.runner.run("profile_shots", job, done)
+
+    def _on_shots(self, key, p, shots, heat) -> bool:
+        current = self._row()
+        if current is None or self._shots_key(current) != key:
+            return False  # joueur changé entre-temps
+        self._shots_done, self._shots = key, shots
+        label = self.ctx.label
+        if p.pos == "G":
+            self.shot_chart.message("Pas de carte des tirs pour un gardien")
+        elif (pd.notna(p.totalShots) and p.totalShots == 0) or (shots is not None and shots.empty):
+            self.shot_chart.message("Aucun tir cette saison dans cette compétition")
+        elif shots is None:
+            self.shot_chart.message("Carte des tirs indisponible pour cette compétition")
+        else:
+            charts.season_shotmap(self.shot_chart, shots, f"Tirs de {p.player}", label)
+        self._fill_shot_kpis(p, shots)
+        self.shots_table.set_dataframe(shot_breakdown(shots))
+        matches = heat.attrs.get("matches")
+        charts.heatmap(self.season_heat_chart, heat, f"Heatmap de la saison - {p.player}",
+                       f"{len(heat)} actions localisées" + (f" · {matches} matchs" if matches else "")
+                       + f" · {label}")
+        return True
+
+    def _fill_shot_kpis(self, p, shots):
+        if shots is None or shots.empty:
+            for tile in self.shot_kpis.values():
+                tile.set("-", "")
+            return
+        s = shot_summary(shots)
+        ref = pooled_shot_quality(self._pool(p))
+        minutes = p.minutesPlayed or 0
+        no_xg = "xG indisponibles"
+        k = self.shot_kpis
+        k["shots"].set(str(s["shots"]), f"{s['shots'] / minutes * 90:.2f} / 90 min" if minutes else "")
+        k["npxg"].set(fmt(s["npxg"]), f"xG total {fmt(s['xg'])}" if pd.notna(s["xg"]) else no_xg)
+        k["npxg_per_shot"].set(fmt(s["npxg_per_shot"], 3),
+                               f"moy. poste {fmt(ref['npxg_per_shot'], 3)}" if pd.notna(s["npxg"]) else no_xg)
+        k["on_target_pct"].set(fmt_pct(s["on_target_pct"]), f"moy. poste {fmt_pct(ref['on_target_pct'])}")
+        k["np_conversion"].set(fmt_pct(s["np_conversion"]), f"pen. {s['pen_goals']}/{s['pen_taken']}")
+        diff = s["xgot_minus_xg"]
+        k["xgot_minus_xg"].set(f"{diff:+.2f}" if pd.notna(diff) else "-",
+                               "qualité de frappe" if pd.notna(diff) else no_xg)
+
     # --- suivi & export ---------------------------------------------------------
     def _toggle_follow(self):
         p = self._row()
@@ -388,15 +521,27 @@ class ProfilePage(Page):
         path, _ = QFileDialog.getSaveFileName(self, "Exporter la fiche", f"fiche_{p.player}.pdf", "PDF (*.pdf)")
         if not path:
             return
+        if self._shots_done == self._shots_key(p):
+            self._write_pdf(path)
+        else:  # tirs & heatmap pas encore chargés : chargement en arrière-plan puis écriture
+            self._load_shots(p, then=lambda: self._write_pdf(path))
+
+    def _write_pdf(self, path: str):
+        p = self._row()
+        if p is None:
+            return
         kpis = [(tile.findChild(QLabel, "KpiLabel").text(), tile.value.text()) for tile in self.kpis.values()]
         photo = self.state.images.get("player", p.player_id)
         figures = [report.cover(p.player, f"{p.team} · {POSITIONS[p.pos]} · {self.ctx.label}", self._facts, kpis,
                                 report.pixmap_to_array(photo))]
-        for chart in (self.pct_chart, self.form_chart, self.similar_radar, self.career_chart):
+        for chart in (self.pct_chart, self.form_chart, self.shot_chart, self.season_heat_chart, self.similar_radar,
+                      self.career_chart):
             if chart.figure.axes:
                 figures.append(chart.figure)
         if not self.similar_table.model_.dataframe().empty:
             figures += report.table_pages(self.similar_table.visible_dataframe(), "Profils similaires")
+        if not self.shots_table.model_.dataframe().empty:
+            figures += report.table_pages(self.shots_table.visible_dataframe(), "Répartition des tirs")
         figures += report.table_pages(self.all_table.visible_dataframe(), "Toutes les statistiques")
         try:
             report.save(path, figures)

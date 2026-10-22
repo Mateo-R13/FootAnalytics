@@ -8,10 +8,11 @@ from functools import partial
 import numpy as np
 from matplotlib.patches import Arc, Circle, Ellipse, Rectangle
 
+from ..config import PENALTY_BOX
+
 # 1 unité Opta = 1,05 m en longueur et 0,68 m en largeur (terrain de 105 x 68 m)
 METERS_X, METERS_Y = 1.05, 0.68
 CIRCLE_R = 9.15  # rayon du rond central et de l'arc de la surface, en mètres
-PENALTY_BOX = (17.0, 21.1, 78.9)    # profondeur, bord bas, bord haut (unités Opta)
 SIX_YARD_BOX = (5.8, 36.8, 63.2)
 PENALTY_SPOT = 11.5
 GOAL = (45.2, 54.8)
@@ -73,3 +74,27 @@ def heatmap(ax, x, y, cmap, bins=(30, 20), sigma: float = 1.2, zorder: float = 0
                                             range=[[0, 100], [0, 100]])
     density = smooth(counts, sigma)
     return ax.pcolormesh(xedges, yedges, density.T, cmap=cmap, shading="flat", zorder=zorder)
+
+
+def draw_half_pitch(ax, line_color: str, pitch_color: str, linewidth: float = 1.0, line_zorder: float = 0.9):
+    """Moitié offensive verticale, but en haut : abscisse = largeur (0-100), ordonnée = longueur (50-100)."""
+    ax.set_facecolor(pitch_color)
+    style = {"fill": False, "edgecolor": line_color, "linewidth": linewidth, "zorder": line_zorder}
+    rw, rl = CIRCLE_R / METERS_Y, CIRCLE_R / METERS_X  # rayons en unités de largeur / de longueur
+    depth, y0, y1 = PENALTY_BOX
+    depth6, s0, s1 = SIX_YARD_BOX
+    ax.add_patch(Rectangle((0, 50), 100, 50, **style))
+    ax.add_patch(Rectangle((y0, 100 - depth), y1 - y0, depth, **style))
+    ax.add_patch(Rectangle((s0, 100 - depth6), s1 - s0, depth6, **style))
+    ax.add_patch(Rectangle((GOAL[0], 100), GOAL[1] - GOAL[0], GOAL_DEPTH, **style))
+    spot = 100 - PENALTY_SPOT
+    theta = np.degrees(np.arccos((depth - PENALTY_SPOT) / rl))
+    ax.add_patch(Arc((50, spot), 2 * rw, 2 * rl, theta1=270 - theta, theta2=270 + theta,
+                     edgecolor=line_color, linewidth=linewidth, zorder=line_zorder))
+    ax.add_patch(Arc((50, 50), 2 * rw, 2 * rl, theta1=0, theta2=180,
+                     edgecolor=line_color, linewidth=linewidth, zorder=line_zorder))
+    ax.add_patch(Circle((50, spot), 0.35, color=line_color, zorder=line_zorder))
+    ax.set_xlim(-2, 102)
+    ax.set_ylim(48, 100 + GOAL_DEPTH + 2)
+    ax.set_aspect(METERS_X / METERS_Y)  # une unité de longueur (verticale) est plus longue qu'une de largeur
+    ax.axis("off")

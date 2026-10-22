@@ -26,6 +26,12 @@ GLOSSARY = [
      "par penalty)."),
     ("xGOT (xG cadré)", "xG recalculé après le tir, selon l'endroit où le ballon arrive dans le cadre : "
      "mesure la qualité de frappe."),
+    ("xGOT - xG", "Fiche joueur, onglet Tirs : xGOT moins xG des tirs hors penalty. Positif = le joueur cadre "
+     "mieux que la moyenne ses occasions (qualité de frappe), négatif = il les gâche."),
+    ("xG par tir", "npxG ÷ tirs hors penalty : qualité moyenne des positions de tir. Comparé à la moyenne du poste "
+     "(somme des npxG ÷ somme des tirs des joueurs du même poste)."),
+    ("Conversion hors penalty", "Buts hors penalty ÷ tirs hors penalty. Très instable sur moins de ~50 tirs : "
+     "à lire avec l'xG par tir."),
     ("Buts évités", "Pour un gardien : xGOT des tirs subis moins buts encaissés. Positif = mieux qu'attendu."),
     ("xA (expected assists)", "Probabilité qu'une passe devienne une passe décisive, quel que soit le résultat "
      "du tir."),

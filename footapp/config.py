@@ -353,6 +353,9 @@ MATCH_STAT_LABELS = {
     "goalKicks": "Six mètres",
 }
 
+# Surface de réparation en unités Opta : profondeur, bord bas, bord haut (sert au terrain et aux tirs)
+PENALTY_BOX = (17.0, 21.1, 78.9)
+
 # Tirs (cartes des tirs) : libellés français des valeurs Sofascore
 SHOT_OUTCOMES = {"goal": "But", "save": "Arrêté", "blocked-off-line": "Sauvé sur la ligne", "post": "Poteau",
                  "miss": "Non cadré", "block": "Contré"}

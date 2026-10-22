@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from .config import ALL_PLAYER_METRICS, LOWER_IS_BETTER
+from .config import ALL_PLAYER_METRICS, LOWER_IS_BETTER, SHOT_BODY_PARTS, SHOT_SITUATIONS
 
 
 def per90(df: pd.DataFrame) -> pd.DataFrame:
@@ -87,6 +87,74 @@ def scout(pool90: pd.DataFrame, criteria: list[tuple[str, float]]) -> pd.DataFra
         out[f"{key}__pct"] = pct.loc[ok, key]
     out["score"] = pct.loc[ok, keys].mean(axis=1)
     return out.sort_values("score", ascending=False)
+
+
+# ---------------------------------------------------------------------------
+# Tirs d'un joueur sur la saison (sortie de FootData.player_shots)
+# ---------------------------------------------------------------------------
+def _share(num, den) -> float:
+    return num / den if den else np.nan
+
+
+def _xg_sum(xg: pd.Series) -> float:
+    """Somme des xG, NaN si aucun tir n'a d'xG (compétition non couverte) : jamais 0 par défaut."""
+    return float(xg.sum(min_count=1))
+
+
+def shot_summary(shots: pd.DataFrame) -> dict:
+    """Indicateurs de finition. Les penalties sont exclus du npxG, de la conversion et des zones."""
+    shots = shots if shots is not None else pd.DataFrame(columns=["type", "xg", "xgot", "penalty", "in_box",
+                                                                  "on_target"])
+    goal = shots["type"].eq("goal")
+    pen = shots["penalty"].astype(bool)
+    np_ = shots[~pen]
+    np_goals = int(goal[~pen].sum())
+    npxg = _xg_sum(np_["xg"])
+    np_xgot = _xg_sum(np_["xgot"])
+    return {
+        "shots": len(shots), "np_shots": len(np_), "goals": int(goal.sum()), "np_goals": np_goals,
+        "pen_taken": int(pen.sum()), "pen_goals": int((goal & pen).sum()),
+        "xg": _xg_sum(shots["xg"]), "npxg": npxg, "npxg_per_shot": _share(npxg, len(np_)),
+        "on_target_pct": 100 * _share(int(shots["on_target"].sum()), len(shots)),
+        "np_conversion": 100 * _share(np_goals, len(np_)),
+        "in_box_pct": 100 * _share(int(np_["in_box"].sum()), len(np_)),
+        "xgot_minus_xg": np_xgot - npxg,  # qualité de frappe (hors penalties), NaN sans xG
+    }
+
+
+def _shot_rows(category: str, groups) -> list[dict]:
+    rows = []
+    for value, d in groups:
+        xg = _xg_sum(d["xg"])
+        rows.append({"Catégorie": category, "Valeur": value, "Tirs": len(d), "Buts": int(d["type"].eq("goal").sum()),
+                     "xG": round(xg, 2), "xG par tir": round(xg / len(d), 3),
+                     "% cadrés": round(100 * d["on_target"].mean())})
+    return sorted(rows, key=lambda r: -r["Tirs"])
+
+
+def shot_breakdown(shots: pd.DataFrame) -> pd.DataFrame:
+    """Répartition des tirs par situation de jeu, surface de contact et zone (hors penalties)."""
+    columns = ["Catégorie", "Valeur", "Tirs", "Buts", "xG", "xG par tir", "% cadrés"]
+    if shots is None or shots.empty:
+        return pd.DataFrame(columns=columns)
+    situation = shots["situation"].map(lambda v: SHOT_SITUATIONS.get(v, v or "Inconnue"))
+    body = shots["body"].map(lambda v: SHOT_BODY_PARTS.get(v, v or "Inconnue"))
+    np_ = shots[~shots["penalty"].astype(bool)]
+    zone = np.where(np_["in_box"], "Dans la surface", "Hors surface")
+    rows = (_shot_rows("Situation", shots.groupby(situation)) + _shot_rows("Surface de contact", shots.groupby(body))
+            + _shot_rows("Zone (hors penalties)", np_.groupby(zone)))
+    return pd.DataFrame(rows, columns=columns)
+
+
+def pooled_shot_quality(pool: pd.DataFrame) -> dict:
+    """Moyennes du poste, pondérées par le volume de tirs : npxG par tir hors penalty et % de tirs cadrés."""
+    if pool is None or pool.empty:
+        return {"npxg_per_shot": np.nan, "on_target_pct": np.nan}
+    shots = pool["totalShots"].fillna(0)
+    np_shots = (shots - pool["penaltiesTaken"].fillna(0)).clip(lower=0)
+    has_xg = pool["npxg"].notna()
+    return {"npxg_per_shot": _share(pool.loc[has_xg, "npxg"].sum(), np_shots[has_xg].sum()),
+            "on_target_pct": 100 * _share(pool["shotsOnTarget"].fillna(0).sum(), shots.sum())}
 
 
 # ---------------------------------------------------------------------------

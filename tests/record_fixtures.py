@@ -3,8 +3,9 @@
 Usage (depuis la racine du projet) :
     .venv\\Scripts\\python.exe -m tests.record_fixtures
 
-Rejoue un scénario représentatif (Ligue 1 : classement, joueurs, un match, un joueur, matchs de la
-saison des deux sources, prochains matchs) et sauvegarde toutes les réponses dans tests/fixtures/api.json.gz.
+Rejoue un scénario représentatif (Ligue 1 : classement, joueurs, un match, un joueur, tirs et heatmap de la
+saison de deux joueurs, matchs de la saison des deux sources, prochains matchs) et sauvegarde toutes les
+réponses dans tests/fixtures/api.json.gz.
 À relancer si une source change son format ou pour rafraîchir les données de test.
 """
 import gzip
@@ -60,6 +61,13 @@ def main():
         data.player_info(pid)
         data.player_matches(pid, UT, sid)
         data.player_career(pid)
+        # tirs et heatmap de la saison : le joueur ci-dessus (souvent un gardien -> 404 enregistré comme None)
+        # et l'attaquant qui tire le plus
+        forwards = players[players["pos"] == "F"]
+        shooter = int(forwards.sort_values("totalShots", ascending=False).iloc[0]["player_id"])
+        for p in (pid, shooter):
+            data.player_shots(p, UT, sid)
+            data.player_season_heatmap(p, UT, sid)
         teams = standings[["Équipe", "team_id"]].rename(columns={"Équipe": "name"}).head(2)
         data.team_season_stats(UT, sid, teams)
         data.team_matches(UT, sid)               # chemin Understat
@@ -67,7 +75,7 @@ def main():
         data.upcoming_events(UT, sid)
 
         meta = {"ut": UT, "sid": sid, "round": rnd, "event": {**event, "date": event["date"].isoformat()},
-                "player_id": pid, "season_start": data.season_start(UT, sid)}
+                "player_id": pid, "shooter_id": shooter, "season_start": data.season_start(UT, sid)}
         FIXTURE.parent.mkdir(exist_ok=True)
         with gzip.open(FIXTURE, "wt", encoding="utf-8") as f:
             json.dump({"meta": meta, "responses": client.recorded, "understat": understat.recorded}, f)

@@ -9,9 +9,19 @@ import pandas as pd
 from .analysis import expected_points
 from .api.sofascore import ApiError, SofascoreClient
 from .api.understat import UnderstatClient
-from .config import PENALTY_XG, PLAYER_METRICS, POSITIONS, TEAM_EXTRA_FIELDS, TEAM_METRICS
+from .config import (
+    PENALTY_BOX,
+    PENALTY_XG,
+    PLAYER_METRICS,
+    POSITIONS,
+    SHOT_ON_TARGET,
+    TEAM_EXTRA_FIELDS,
+    TEAM_METRICS,
+)
 
 HOUR = 3600
+_SHOT_COLUMNS = ["event_id", "date", "opponent", "venue", "minute", "added", "type", "situation", "body",
+                 "xg", "xgot", "x", "y"]
 
 
 def _ut(ut: int, sid: int) -> str:
@@ -328,6 +338,58 @@ class FootData:
         for col in ("xG", "xA", "% passes", "% duels", "Note moy."):
             if col in df:
                 df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+        return df
+
+    # --- joueur : tirs et heatmap de la saison ---------------------------------
+    def _is_current_season(self, ut: int, sid: int) -> bool:
+        seasons = self.seasons(ut)
+        return not seasons or seasons[0]["id"] == sid
+
+    def _player_season(self, pid: int, ut: int, sid: int, resource: str):
+        # 2 requêtes par joueur-saison quel que soit le nombre de matchs ; saison passée -> cache permanent
+        return self.client.get(f"/player/{pid}{_ut(ut, sid)}/{resource}", ttl=3 * HOUR,
+                               permanent=not self._is_current_season(ut, sid))
+
+    def player_shots(self, pid: int, ut: int, sid: int) -> pd.DataFrame | None:
+        """Tous les tirs du joueur sur la saison (une ligne par tir) ; None si la ressource n'existe pas
+        (gardien, joueur sans tir, compétition non couverte).
+
+        Coordonnées Sofascore : x = distance au but visé (0-100), y = largeur. xG / xGOT NaN si absents."""
+        data = self._player_season(pid, ut, sid, "shotmap")
+        if data is None:
+            return None
+        rows = []
+        for block in data.get("shotmap", []):
+            e = block.get("event") or {}
+            for s in block.get("shots", []):
+                c = s.get("playerCoordinates") or {}
+                home = bool(s.get("isHome"))
+                rows.append({
+                    "event_id": e.get("id"),
+                    "date": datetime.fromtimestamp(e["startTimestamp"]) if e.get("startTimestamp") else pd.NaT,
+                    "opponent": (e.get("awayTeam" if home else "homeTeam") or {}).get("name", ""),
+                    "venue": "Dom." if home else "Ext.", "minute": s.get("time"), "added": s.get("addedTime"),
+                    "type": s.get("shotType"), "situation": s.get("situation"), "body": s.get("bodyPart"),
+                    "xg": s.get("xg"), "xgot": s.get("xgot"), "x": c.get("x"), "y": c.get("y"),
+                })
+        df = pd.DataFrame(rows, columns=_SHOT_COLUMNS)
+        num = ["xg", "xgot", "x", "y"]
+        df[num] = df[num].apply(pd.to_numeric, errors="coerce")
+        depth, low, high = PENALTY_BOX
+        df["penalty"] = df["situation"].eq("penalty")
+        df["in_box"] = (df["x"] <= depth) & df["y"].between(low, high)
+        df["on_target"] = df["type"].isin(SHOT_ON_TARGET)
+        return df
+
+    def player_season_heatmap(self, pid: int, ut: int, sid: int) -> pd.DataFrame:
+        """Positions du joueur sur la saison (x vers le but adverse, y vers la gauche de l'équipe), un point
+        répété autant de fois que son nombre d'actions ; attrs["matches"] = matchs couverts."""
+        data = self._player_season(pid, ut, sid, "heatmap/overall") or {}
+        pts = pd.DataFrame(data.get("points", []), columns=["x", "y", "count"])
+        reps = pd.to_numeric(pts["count"], errors="coerce").fillna(1).clip(lower=1).astype(int)
+        df = pts.loc[pts.index.repeat(reps), ["x", "y"]].apply(pd.to_numeric, errors="coerce")
+        df = df.reset_index(drop=True)
+        df.attrs["matches"] = data.get("matches")
         return df
 
     # --- matchs ------------------------------------------------------------

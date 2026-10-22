@@ -2,7 +2,15 @@
 import numpy as np
 import pandas as pd
 
-from footapp.config import ALL_PLAYER_METRICS, ALL_TEAM_METRICS, LINEUP_BASE, LINEUP_GROUPS, PLAYER_METRICS, POSITIONS
+from footapp.config import (
+    ALL_PLAYER_METRICS,
+    ALL_TEAM_METRICS,
+    LINEUP_BASE,
+    LINEUP_GROUPS,
+    PLAYER_METRICS,
+    POSITIONS,
+    SHOT_OUTCOMES,
+)
 from footapp.data import FootData, _season_start
 
 
@@ -58,6 +66,39 @@ def test_heatmap(data, meta, recorded):
     pid = int(path.split("/player/")[1].split("/")[0])
     pts = data.heatmap(meta["event"], pid)
     assert not pts.empty and pts[["x", "y"]].stack().between(0, 100).all()
+
+
+def test_tirs_saison(data, meta):
+    """Les tirs de la saison recoupent exactement les statistiques de saison du joueur."""
+    players = data.player_season_stats(meta["ut"], meta["sid"])
+    row = players.set_index("player_id").loc[meta["shooter_id"]]
+    shots = data.player_shots(meta["shooter_id"], meta["ut"], meta["sid"])
+    assert len(shots) == row["totalShots"]
+    assert (shots["type"] == "goal").sum() == row["goals"]
+    assert shots["on_target"].sum() == row["shotsOnTarget"]
+    assert shots["in_box"].sum() == row["shotsFromInsideTheBox"]
+    assert shots["penalty"].sum() == row["penaltiesTaken"]
+    # xG : même source, à l'arrondi et au décalage de mise à jour près
+    assert abs(shots["xg"].sum() - row["expectedGoals"]) < 0.05 + 0.02 * row["expectedGoals"]
+    assert shots["xg"].between(0, 1).all()
+    assert set(shots["type"]) <= set(SHOT_OUTCOMES)
+    assert shots[["x", "y"]].stack().between(0, 100).all()
+
+
+def test_tirs_saison_absents(data, meta):
+    # gardien ou joueur sans tir : la ressource n'existe pas (404 enregistré) -> None
+    players = data.player_season_stats(meta["ut"], meta["sid"]).set_index("player_id")
+    if players.loc[meta["player_id"], "totalShots"] == 0:
+        assert data.player_shots(meta["player_id"], meta["ut"], meta["sid"]) is None
+
+
+def test_heatmap_saison(data, meta, recorded):
+    pid = meta["shooter_id"]
+    pts = data.player_season_heatmap(pid, meta["ut"], meta["sid"])
+    raw = recorded["responses"][f"/player/{pid}/unique-tournament/{meta['ut']}/season/{meta['sid']}/heatmap/overall"]
+    assert len(pts) == sum(p["count"] for p in raw["points"])
+    assert pts[["x", "y"]].stack().between(0, 100).all()
+    assert pts.attrs["matches"] == raw["matches"]
 
 
 def test_xg_absent_reste_nan():

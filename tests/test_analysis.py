@@ -3,7 +3,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from footapp.analysis import composite_index, per90, percentiles, rank_in, scout, similar_players
+from footapp.analysis import (
+    composite_index,
+    per90,
+    percentiles,
+    pooled_shot_quality,
+    rank_in,
+    scout,
+    shot_breakdown,
+    shot_summary,
+    similar_players,
+)
 from footapp.config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITION_TEMPLATES
 
 
@@ -85,3 +95,67 @@ def test_gabarits_de_poste_valides():
     for pos, keys in POSITION_TEMPLATES.items():
         unknown = [k for k in keys if k not in ALL_PLAYER_METRICS]
         assert not unknown, f"{pos} : métriques inconnues {unknown}"
+
+
+def shots(xg=True):
+    """4 tirs : un penalty marqué, un but dans la surface, un arrêt hors surface, un tir contré."""
+    df = pd.DataFrame({
+        "type": ["goal", "goal", "save", "block"],
+        "situation": ["penalty", "assisted", "regular", "corner"],
+        "body": ["right-foot", "head", "left-foot", "right-foot"],
+        "xg": [0.79, 0.4, 0.05, 0.1], "xgot": [0.9, 0.7, 0.1, 0.0],
+        "penalty": [True, False, False, False], "in_box": [True, True, False, True],
+        "on_target": [True, True, True, False],
+    })
+    if not xg:
+        df[["xg", "xgot"]] = np.nan
+    return df
+
+
+def test_resume_des_tirs_exclut_les_penalties():
+    s = shot_summary(shots())
+    assert (s["shots"], s["np_shots"], s["goals"], s["np_goals"]) == (4, 3, 2, 1)
+    assert (s["pen_taken"], s["pen_goals"]) == (1, 1)
+    assert s["npxg"] == pytest.approx(0.55)
+    assert s["xg"] == pytest.approx(1.34)
+    assert s["npxg_per_shot"] == pytest.approx(0.55 / 3)
+    assert s["np_conversion"] == pytest.approx(100 / 3)
+    assert s["on_target_pct"] == pytest.approx(75)
+    assert s["in_box_pct"] == pytest.approx(200 / 3)
+    assert s["xgot_minus_xg"] == pytest.approx(0.8 - 0.55)
+
+
+def test_resume_des_tirs_sans_xg():
+    s = shot_summary(shots(xg=False))
+    for key in ("xg", "npxg", "npxg_per_shot", "xgot_minus_xg"):
+        assert np.isnan(s[key]), key  # NaN, jamais 0
+    assert s["goals"] == 2
+    assert shot_breakdown(shots(xg=False))["xG"].isna().all()
+
+
+def test_repartition_des_tirs():
+    bd = shot_breakdown(shots())
+    assert set(bd["Catégorie"]) == {"Situation", "Surface de contact", "Zone (hors penalties)"}
+    totals = bd.groupby("Catégorie")["Tirs"].sum()
+    assert totals["Situation"] == totals["Surface de contact"] == 4
+    assert totals["Zone (hors penalties)"] == 3  # penalty exclu des zones
+    zone = bd[bd["Catégorie"] == "Zone (hors penalties)"].set_index("Valeur")
+    assert zone.loc["Dans la surface", "Tirs"] == 2
+    assert zone.loc["Dans la surface", "xG"] == pytest.approx(0.5)
+
+
+def test_tirs_vides():
+    empty = shots().iloc[0:0]
+    s = shot_summary(empty)
+    assert s["shots"] == 0 and np.isnan(s["npxg_per_shot"]) and np.isnan(s["on_target_pct"])
+    assert shot_breakdown(empty).empty
+    assert shot_breakdown(None).empty
+
+
+def test_moyennes_de_tirs_du_poste():
+    pool = pd.DataFrame({"totalShots": [10, 30], "penaltiesTaken": [0, 2], "npxg": [1.0, 2.6],
+                         "shotsOnTarget": [5, 10]})
+    ref = pooled_shot_quality(pool)
+    assert ref["npxg_per_shot"] == pytest.approx(3.6 / 38)  # pondéré par le volume, hors penalties
+    assert ref["on_target_pct"] == pytest.approx(37.5)
+    assert np.isnan(pooled_shot_quality(pool.iloc[0:0])["npxg_per_shot"])

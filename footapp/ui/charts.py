@@ -495,6 +495,59 @@ def _shot_size(xg: pd.Series, base: float, scale: float, has_xg: bool):
     return base + scale * xg.fillna(0) if has_xg else base + scale * 0.1
 
 
+# issue du tir -> (libellé, types Sofascore, couleur, point plein)
+_SEASON_OUTCOMES = [
+    ("But", ("goal",), "THIRD", True),
+    ("Arrêté", ("save", "blocked-off-line"), "HOME", True),
+    ("Non cadré", ("miss", "post"), "AWAY", False),
+    ("Contré", ("block",), "MUTED", False),
+]
+SMALL_SAMPLE = 10  # en dessous : avertissement « échantillon réduit »
+
+
+def season_shotmap(chart: ChartWidget, shots: pd.DataFrame, title: str, subtitle: str = ""):
+    """Tirs d'un joueur sur la saison, sur un demi-terrain vertical (but en haut). Penalties non représentés.
+
+    Coordonnées Sofascore : x = distance au but visé, y = largeur (grand y = droite du tireur)."""
+    fig = chart.clear()
+    play = shots[~shots["penalty"]] if shots is not None and not shots.empty else pd.DataFrame()
+    if play.empty:
+        return chart.message("Aucun tir hors penalty cette saison")
+    ax = fig.add_subplot()
+    pitch.draw_half_pitch(ax, line_color=theme.PITCH_LINE, pitch_color=theme.SURFACE)
+    has_xg = play["xg"].notna().any()
+    handles = []
+    for label, types, color_key, filled in _SEASON_OUTCOMES:
+        d = play[play["type"].isin(types)]
+        color = getattr(theme, color_key)
+        handles.append(Line2D([], [], marker="o", ls="", markersize=8, markerfacecolor=color if filled else "none",
+                              markeredgecolor=color, label=f"{label} ({len(d)})"))
+        if d.empty:
+            continue
+        pts = ax.scatter(d["y"], 100 - d["x"], s=_shot_size(d["xg"], 30, 700, has_xg), zorder=4 if filled else 3,
+                         facecolor=color if filled else "none", edgecolor=theme.SURFACE if filled else color,
+                         linewidth=1.3, alpha=0.9)
+        chart.add_hover(ax, pts, [
+            (f"{r.date:%d/%m/%Y} · " if pd.notna(r.date) else "") + f"{r.opponent} ({r.venue}) · {r.minute}'"
+            + (f"+{int(r.added)}" if pd.notna(r.added) and r.added else "")
+            + f"\n{_shot_label(r.type)} · xG {_xg_text(r.xg)} · xGOT {_xg_text(r.xgot)}"
+            + f"\n{_situation(r.situation)} · {_body(r.body)}"
+            for r in d.itertuples()])
+    farthest = float(np.nanmax(play["x"].to_numpy(dtype=float), initial=0))
+    if farthest > 52:  # tir tenté depuis son propre camp : on agrandit le cadre plutôt que de le masquer
+        ax.set_ylim(100 - farthest - 2, ax.get_ylim()[1])
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=4, fontsize=8, frameon=False)
+    notes = [subtitle] if subtitle else []
+    pens = len(shots) - len(play)
+    if pens:
+        notes.append(f"{pens} penalty{'s' if pens > 1 else ''} non représenté{'s' if pens > 1 else ''}")
+    notes.append("taille = xG du tir" if has_xg else "xG indisponibles pour cette compétition")
+    if len(shots) < SMALL_SAMPLE:
+        notes.append("échantillon réduit")
+    _title(ax, title, " · ".join(notes))
+    chart.draw()
+
+
 def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str, subtitle: str | None = None):
     """Densité des positions. Sofascore : x vers le but adverse, y vers la GAUCHE de l'équipe. Sens du jeu
     vers la droite, la gauche de l'équipe est en haut : y se trace tel quel (et non 100 - y)."""
