@@ -77,7 +77,10 @@ def compose(event: dict, bundle: dict | None, tm: pd.DataFrame | None, by_id: di
 
     # classement + rang xPts, bilan domicile / extérieur
     rows = st[st["team_id"].isin([hid, aid])] if not st.empty else st
-    table = rows[[col for col in STANDING_COLUMNS if col in rows] + ["team_id"]].copy() if not rows.empty \
+    # classements par groupe puis général (MLS : conférences, puis classement d'ensemble) : une ligne par équipe
+    rows = rows.drop_duplicates("team_id") if not rows.empty else rows
+    shown = (["Groupe"] if "Groupe" in rows else []) + STANDING_COLUMNS  # conférence / groupe de chaque équipe
+    table = rows[[col for col in shown if col in rows] + ["team_id"]].copy() if not rows.empty \
         else pd.DataFrame(columns=[*STANDING_COLUMNS, "team_id"])
     if has_tm and not table.empty:
         xt = xg_table(tm).set_index("Équipe")
@@ -424,6 +427,7 @@ class PrematchPage(Page):
         self.match_box.clear()
         self.match_box.blockSignals(False)
         self._clear("Chargement des prochains matchs…")
+        self.k_model.set("-")  # évaluation propre à la compétition : jamais celle de la précédente
         if self.isVisible():
             self._load()
 

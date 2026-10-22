@@ -114,9 +114,9 @@ class MatchesPage(Page):
         lbar.addStretch()
         lbar.addWidget(export)
         lineup_card.body.insertLayout(0, lbar)
-        lineup_card.setMinimumWidth(420)
+        lineup_card.setMinimumWidth(330)
         heat_card = chart_card(self.heatmap_chart, "Heatmap", "clic : heatmap · double-clic : fiche")
-        heat_card.setMinimumWidth(400)
+        heat_card.setMinimumWidth(270)
         lineup_split = QSplitter(Qt.Orientation.Horizontal)
         lineup_split.addWidget(lineup_card)
         lineup_split.addWidget(heat_card)
@@ -163,7 +163,22 @@ class MatchesPage(Page):
     def set_context(self, ctx):
         self.round_box.clear()
         self.events_list.clear()
+        self._clear_match("Sélectionnez un match")
         self.state.runner.run("rounds", lambda progress: self.state.data.rounds(ctx.ut, ctx.sid), self._on_rounds)
+
+    def _clear_match(self, message: str):
+        """Aucun match affiché (changement de compétition) : rien de la compétition précédente ne reste."""
+        self.live_timer.stop()
+        self.bundle = None
+        self.state.runner.run("match", lambda progress: None, lambda _: None)  # écarte un chargement en cours
+        for label in (self.home_name, self.away_name, self.home_logo, self.away_logo):
+            label.clear()
+        self.score.setText("-")
+        self.info.setText(message)
+        for c in (self.stats_chart, self.shots_chart, self.xg_chart, self.positions_chart, self.heatmap_chart):
+            c.message(message)
+        self.lineup_table.set_dataframe(pd.DataFrame())
+        self.timeline.set_dataframe(pd.DataFrame())
 
     def _on_rounds(self, result):
         rounds, current = result
@@ -175,6 +190,8 @@ class MatchesPage(Page):
             if r["round"] == current and not r.get("slug"):
                 current_index = i
         self.round_box.blockSignals(False)
+        if not rounds:
+            self._clear_match("Aucun match disponible pour cette saison")
         if rounds:
             self._auto_round = True  # autorise un repli sur la journée précédente si rien n'est joué
             self.round_box.setCurrentIndex(current_index)

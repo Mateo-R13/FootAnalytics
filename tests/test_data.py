@@ -406,3 +406,37 @@ def test_appariement_des_noms_d_equipes():
     links = link_team_ids(["Paris Saint Germain", "Marseille", "Rennes", "Inconnu FC", "Marseille"], standings)
     assert links == {"Paris Saint Germain": 1, "Marseille": 2, "Rennes": 3}  # un identifiant par équipe au plus
     assert link_team_ids(["Lens"], pd.DataFrame()) == {}
+
+
+def test_saison_sans_journees_semaines_calendaires():
+    """Sofascore sans journées (MLS 2026) : matchs lus page par page et regroupés par semaine."""
+    def event(eid, ts, status):
+        return {"id": eid, "startTimestamp": ts, "status": {"type": status, "description": ""},
+                "homeTeam": {"id": eid, "name": f"H{eid}"}, "awayTeam": {"id": 100 + eid, "name": f"A{eid}"},
+                "homeScore": {"current": 1} if status == "finished" else {},
+                "awayScore": {"current": 0} if status == "finished" else {}}
+
+    monday = int(pd.Timestamp("2026-10-12 12:00").timestamp())
+    day = 86400
+    pages = {"/events/last/0": {"events": [event(3, monday + 7 * day, "finished"),
+                                           event(2, monday + 2 * day, "finished")], "hasNextPage": True},
+             "/events/last/1": {"events": [event(2, monday + 2 * day, "finished"),  # doublon entre pages
+                                           event(1, monday, "finished")], "hasNextPage": False},
+             "/events/next/0": {"events": [event(4, monday + 9 * day, "notstarted"),
+                                           event(5, monday + 15 * day, "notstarted")], "hasNextPage": False}}
+    asked = []
+
+    class Fake:
+        def get(self, path, ttl=3600, permanent=False, slim=None):
+            asked.append(path)
+            return next((v for k, v in pages.items() if path.endswith(k)), None)  # /rounds : 404
+
+    data = FootData(Fake())
+    rounds, current = data.rounds(242, 1)
+    assert [r["name"] for r in rounds] == ["Semaine du 12/10/2026", "Semaine du 19/10/2026", "Semaine du 26/10/2026"]
+    assert current == 2  # semaine du prochain match
+    week = data.round_events(242, 1, rounds[1])
+    assert [e["id"] for e in week] == [3, 4] and week[0]["home_score"] == 1
+    assert [e["id"] for e in data.round_events(242, 1, rounds[0])] == [1, 2]
+    assert [e["id"] for e in data.upcoming_events(242, 1)] == [4, 5]
+    assert sum("/events/last/0" in p for p in asked) == 1  # saison relue en mémoire, pas re-demandée

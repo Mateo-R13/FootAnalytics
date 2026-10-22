@@ -196,8 +196,10 @@ class PredictionsPage(Page):
         self.table.set_dataframe(df, hidden=("home_id", "away_id", "_home", "_away", "event_id"))
         if not df.empty:
             self.table.selectRow(0)
-        else:
+        elif model_names:
             self._simulate()
+        else:
+            self.chart.message("Pas encore assez de matchs joués pour estimer les forces des équipes")
 
     def _open_prematch(self, rec):
         if rec is None:

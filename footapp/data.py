@@ -1,8 +1,9 @@
 """Accès aux données : appels API -> DataFrames pandas prêts à analyser."""
 import re
+import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager, nullcontext
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import partial
 from typing import Any
 
@@ -37,6 +38,24 @@ _SHOT_COLUMNS = ["event_id", "date", "opponent", "venue", "minute", "added", "ty
 
 def _ut(ut: int, sid: int) -> str:
     return f"/unique-tournament/{ut}/season/{sid}"
+
+
+def _week_start(when: datetime) -> date:
+    """Lundi de la semaine d'un match (saisons sans journées)."""
+    return (when - timedelta(days=when.weekday())).date()
+
+
+def _event_row(e: dict) -> dict:
+    """Match Sofascore (liste de matchs) -> dictionnaire commun aux journées, semaines et secours ESPN."""
+    return {
+        "id": e["id"],
+        "date": datetime.fromtimestamp(e.get("startTimestamp", 0)),
+        "home": e["homeTeam"]["name"], "home_id": e["homeTeam"]["id"],
+        "away": e["awayTeam"]["name"], "away_id": e["awayTeam"]["id"],
+        "home_score": _goals(e.get("homeScore")), "away_score": _goals(e.get("awayScore")),
+        "status": (e.get("status") or {}).get("type", ""),
+        "status_label": (e.get("status") or {}).get("description", ""),
+    }
 
 
 def _season_start(year: str) -> int:
@@ -182,6 +201,7 @@ class FootData:
         self.client = client
         self.understat = understat
         self.espn = espn  # secours réduit (classement, résultats, calendrier), seulement après un échec
+        self._events_memo: dict[tuple[int, int], tuple[float, list[dict]]] = {}
 
     @contextmanager
     def cache_first(self) -> Iterator[None]:
@@ -573,29 +593,52 @@ class FootData:
             if r.get("prefix"):
                 name = f"{r['prefix']} - {name}"
             rounds.append({"round": r["round"], "slug": r.get("slug"), "prefix": r.get("prefix"), "name": name})
+        if not rounds:  # saison sans journées chez Sofascore (MLS 2026…) : semaines calendaires
+            return self._week_rounds(ut, sid)
         current = (data.get("currentRound") or {}).get("round")
         return rounds, current
 
     def round_events(self, ut: int, sid: int, rnd: dict) -> list[dict]:
+        if rnd.get("week"):
+            return [e for e in self._season_events(ut, sid) if _week_start(e["date"]) == rnd["week"]]
         path = f"{_ut(ut, sid)}/events/round/{rnd['round']}"
         if rnd.get("slug"):
             path += f"/slug/{rnd['slug']}"
             if rnd.get("prefix"):
                 path += f"/prefix/{rnd['prefix']}"
         data = self.client.get(path, ttl=15 * 60) or {}
-        events = []
-        for e in data.get("events", []):
-            events.append({
-                "id": e["id"],
-                "date": datetime.fromtimestamp(e.get("startTimestamp", 0)),
-                "home": e["homeTeam"]["name"], "home_id": e["homeTeam"]["id"],
-                "away": e["awayTeam"]["name"], "away_id": e["awayTeam"]["id"],
-                "home_score": _goals(e.get("homeScore")), "away_score": _goals(e.get("awayScore")),
-                "status": (e.get("status") or {}).get("type", ""),
-                "status_label": (e.get("status") or {}).get("description", ""),
-            })
+        events = [_event_row(e) for e in data.get("events", [])]
         events.sort(key=lambda e: e["date"])
         return events
+
+    def _season_events(self, ut: int, sid: int) -> list[dict]:
+        """Matchs de la saison page par page (joués puis à venir), pour les saisons sans journées.
+
+        Gardés une minute en mémoire : la saison est relue semaine par semaine juste après."""
+        key = (ut, sid)
+        memo = self._events_memo.get(key)
+        if memo is not None and time.monotonic() - memo[0] < 60:
+            return memo[1]
+        events: dict[int, dict] = {}
+        for kind, max_pages in (("last", 40), ("next", 2)):  # 30 matchs par page
+            for page in range(max_pages):
+                data = self.client.get(f"{_ut(ut, sid)}/events/{kind}/{page}", ttl=15 * 60) or {}
+                events.update((e["id"], _event_row(e)) for e in data.get("events", []))
+                if not data.get("hasNextPage"):
+                    break
+        out = sorted(events.values(), key=lambda e: e["date"])
+        self._events_memo[key] = (time.monotonic(), out)
+        return out
+
+    def _week_rounds(self, ut: int, sid: int) -> tuple[list[dict], int | None]:
+        events = self._season_events(ut, sid)
+        weeks = sorted({_week_start(e["date"]) for e in events})
+        rounds: list[dict] = [{"round": i + 1, "slug": None, "prefix": None, "week": w,
+                               "name": f"Semaine du {w:%d/%m/%Y}"} for i, w in enumerate(weeks)]
+        upcoming = [e for e in events if e["status"] == "notstarted"]
+        week = _week_start(upcoming[0]["date"]) if upcoming else (weeks[-1] if weeks else None)
+        current: int | None = next((r["round"] for r in rounds if r["week"] == week), None)
+        return rounds, current
 
     def refresh_event(self, event: dict) -> dict:
         """Score et statut à jour d'un match (mode direct)."""
