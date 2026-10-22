@@ -122,21 +122,26 @@ class SofascoreClient:
         (self.cache_dir / "permanent").mkdir(parents=True, exist_ok=True)
 
     # --- requêtes --------------------------------------------------------
-    def get(self, path: str, ttl: float | None = 3600, permanent: bool = False):
+    def get(self, path: str, ttl: float | None = 3600, permanent: bool = False, slim=None):
         """Renvoie le JSON de `path` (ou None si la ressource n'existe pas).
 
         ttl : durée de validité du cache en secondes.
         permanent : la donnée ne changera plus (match terminé) -> cache sans expiration.
+        slim : fonction (idempotente) qui ne garde que les champs utiles, appliquée avant l'écriture du
+        cache (réponses volumineuses) et à chaque lecture.
         """
+        def trimmed(data):
+            return slim(data) if slim is not None and data is not None else data
+
         cached, fresh = self._read_cache(path, ttl)
         if cached is not None and (fresh or getattr(self._local, "cache_first", False)):
-            return cached.get("data")
+            return trimmed(cached.get("data"))
 
         try:
-            data = self._fetch(path)
+            data = trimmed(self._fetch(path))
         except ApiError:
             if cached is not None:  # mieux vaut une donnée un peu ancienne que rien
-                return cached.get("data")
+                return trimmed(cached.get("data"))
             raise
 
         # une ressource absente (404) peut apparaître plus tard (stats publiées après le match) :

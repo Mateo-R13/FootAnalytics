@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 
+from footapp.api.sofascore import ApiError
 from footapp.config import (
     ALL_PLAYER_METRICS,
     ALL_TEAM_METRICS,
@@ -11,7 +12,7 @@ from footapp.config import (
     POSITIONS,
     SHOT_OUTCOMES,
 )
-from footapp.data import FootData, _season_start
+from footapp.data import SQUAD_FIELDS, FootData, _season_start, _slim_squad
 
 
 def test_saisons(data, meta):
@@ -140,3 +141,60 @@ def test_annee_de_saison():
     assert _season_start("98/99") == 1998
     assert _season_start("2025") == 2025
     assert _season_start("") == 0
+
+
+# --- valeurs et contrats (effectifs actuels) ------------------------------------------------
+def test_effectifs_valeurs_et_contrats(data, meta):
+    players = data.player_season_stats(meta["ut"], meta["sid"])
+    teams = players["team_id"].dropna().astype(int).unique()
+    prof = data.squad_profiles(teams)
+    assert prof["player_id"].is_unique
+    assert prof.attrs["missing_teams"] == []
+    assert set(prof["squad_team_id"]) == set(teams)
+    merged = FootData.add_profiles(players, prof)
+    assert len(merged) == len(players)
+    regulars = merged[merged["minutesPlayed"] >= 270]
+    assert regulars["value"].notna().mean() >= 0.95  # les joueurs qui jouent ont presque tous une valeur
+    assert prof["age"].dropna().between(15, 45).all()
+    assert (prof["contract_until"].dropna().dt.year >= 2026).all()
+    assert (prof["value"].dropna() > 0).all()
+    assert set(prof["foot"]) <= {"Droit", "Gauche", "Les deux", ""}
+
+
+def test_allegement_des_effectifs_idempotent():
+    raw = {"players": [{"player": {"id": 1, "name": "A", "position": "F", "positionsDetailed": ["ST"],
+                                   "proposedMarketValueRaw": {"value": 5_000_000, "currency": "EUR"},
+                                   "country": {"name": "France", "alpha2": "FR"}, "slug": "a",
+                                   "fieldTranslations": {"x": "y"}, "team": {"id": 9}}}],
+           "foreignPlayers": [], "supportStaff": [{"id": 3}]}
+    slim = _slim_squad(raw)
+    assert _slim_squad(slim) == slim
+    assert slim.keys() == {"players"}
+    player = slim["players"][0]["player"]
+    assert set(player) <= set(SQUAD_FIELDS)
+    assert player["country"] == {"name": "France"}
+
+
+class _SquadClient:
+    """Effectifs factices : une équipe en erreur, une valeur dans une autre devise."""
+
+    def get(self, path, ttl=3600, permanent=False, slim=None):
+        if path == "/team/2/players":
+            raise ApiError("indisponible (test)")
+        data = {"players": [
+            {"player": {"id": 10, "name": "A", "proposedMarketValueRaw": {"value": 3e6, "currency": "EUR"},
+                        "dateOfBirthTimestamp": 946684800, "contractUntilTimestamp": 1814313600,
+                        "preferredFoot": "Left", "positionsDetailed": ["MC", "DM"]}},
+            {"player": {"id": 11, "name": "B", "proposedMarketValueRaw": {"value": 3e6, "currency": "USD"}}},
+        ]}
+        return slim(data) if slim else data
+
+
+def test_effectifs_equipe_en_erreur_et_devise():
+    prof = FootData(_SquadClient()).squad_profiles([1, 2])
+    assert prof.attrs["missing_teams"] == [2]
+    assert prof.set_index("player_id").at[10, "value"] == 3e6
+    assert np.isnan(prof.set_index("player_id").at[11, "value"])  # autre devise : pas de valeur
+    row = prof.set_index("player_id").loc[10]
+    assert row["foot"] == "Gauche" and row["positions"] == "MC/DM"
+    assert row["contract_until"].year == 2027

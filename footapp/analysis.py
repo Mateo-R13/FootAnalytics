@@ -90,6 +90,67 @@ def scout(pool90: pd.DataFrame, criteria: list[tuple[str, float]]) -> pd.DataFra
 
 
 # ---------------------------------------------------------------------------
+# Valeur vs performance
+# ---------------------------------------------------------------------------
+def huber_fit(X: np.ndarray, y: np.ndarray, c: float = 1.345, iters: int = 50) -> tuple[np.ndarray, float]:
+    """Régression robuste de Huber (moindres carrés repondérés) : (coefficients, échelle MAD des résidus).
+
+    Les résidus au-delà de c × échelle pèsent moins : quelques joueurs hors norme ne tirent pas la droite.
+    """
+    beta = np.linalg.lstsq(X, y, rcond=None)[0]
+    scale = 1.0
+    for _ in range(iters):
+        r = y - X @ beta
+        scale = 1.4826 * float(np.median(np.abs(r - np.median(r)))) or 1e-9
+        w = np.minimum(1.0, c * scale / np.maximum(np.abs(r), 1e-12))
+        sw = np.sqrt(w)
+        new = np.linalg.lstsq(X * sw[:, None], y * sw, rcond=None)[0]
+        done = np.allclose(new, beta, atol=1e-9)
+        beta = new
+        if done:
+            break
+    return beta, scale
+
+
+AGE_REF = 26  # âge de référence du terme d'âge
+
+
+def value_model(pool: pd.DataFrame, score: str, use_age: bool = True, min_n: int = 30) -> pd.DataFrame:
+    """Performance attendue d'après la valeur estimée : score ~ poste (+ championnat) + log10(valeur) [+ âge].
+
+    Ajusté sur tout le `pool` (joueurs avec valeur > 0). Ajoute expected (score attendu), gap (score - attendu)
+    et z (écart rapporté à l'échelle robuste des résidus), trié par z décroissant : z > 0 = meilleur que ce
+    que sa valeur laisse attendre. attrs : slope (score par ×10 de valeur), scale, r2, n, coef.
+    Renvoie un tableau vide sous `min_n` joueurs.
+    """
+    needed = [score, "value", "pos"] + (["age"] if use_age else [])
+    if pool is None or pool.empty or any(c not in pool for c in needed):
+        return pd.DataFrame()
+    d = pool.dropna(subset=needed)
+    d = d[d["value"] > 0].copy()
+    if len(d) < min_n:
+        return pd.DataFrame()
+    parts = [pd.get_dummies(d["pos"], dtype=float)]
+    if "league" in d and d["league"].nunique() > 1:
+        parts.append(pd.get_dummies(d["league"], dtype=float, drop_first=True))
+    X = pd.concat(parts, axis=1)
+    X["log_value"] = np.log10(d["value"].astype(float))
+    if use_age:
+        X["age"] = d["age"].astype(float) - AGE_REF
+    y = d[score].to_numpy(float)
+    beta, scale = huber_fit(X.to_numpy(float), y)
+    d["expected"] = X.to_numpy(float) @ beta
+    d["gap"] = y - d["expected"]
+    d["z"] = d["gap"] / scale
+    sst = float(((y - y.mean()) ** 2).sum())
+    coef = dict(zip(X.columns, map(float, beta), strict=True))
+    d = d.sort_values("z", ascending=False)
+    d.attrs.update(slope=coef["log_value"], scale=float(scale), n=len(d), coef=coef,
+                   r2=1 - float((d["gap"] ** 2).sum()) / sst if sst else np.nan)
+    return d
+
+
+# ---------------------------------------------------------------------------
 # Tirs d'un joueur sur la saison (sortie de FootData.player_shots)
 # ---------------------------------------------------------------------------
 def _share(num, den) -> float:

@@ -43,3 +43,19 @@ def test_lissage_conserve_la_masse_et_la_symetrie():
     kernel = _gaussian_kernel(1.2)
     r = len(kernel) // 2
     assert np.allclose(out[15 - r:15 + r + 1, 10 - r:10 + r + 1], np.outer(kernel, kernel))  # flou séparable
+
+
+def test_effectifs_relus_depuis_le_cache_sans_requete(tmp_path, monkeypatch):
+    from footapp.data import FootData
+
+    client = SofascoreClient(tmp_path)
+    calls = []
+    squad = {"players": [{"player": {"id": 7, "name": "A",
+                                     "proposedMarketValueRaw": {"value": 1e6, "currency": "EUR"}}}]}
+    monkeypatch.setattr(client, "_fetch", lambda path, raw=False: calls.append(path) or squad)
+    data = FootData(client)
+    first = data.squad_profiles([1, 2, 3])
+    assert len(calls) == 3
+    again = data.squad_profiles([1, 2, 3])
+    assert len(calls) == 3  # tout vient du cache
+    assert again.equals(first)

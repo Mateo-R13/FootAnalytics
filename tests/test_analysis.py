@@ -5,6 +5,7 @@ import pytest
 
 from footapp.analysis import (
     composite_index,
+    huber_fit,
     per90,
     percentiles,
     pooled_shot_quality,
@@ -13,6 +14,7 @@ from footapp.analysis import (
     shot_breakdown,
     shot_summary,
     similar_players,
+    value_model,
 )
 from footapp.config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITION_TEMPLATES
 
@@ -159,3 +161,55 @@ def test_moyennes_de_tirs_du_poste():
     assert ref["npxg_per_shot"] == pytest.approx(3.6 / 38)  # pondéré par le volume, hors penalties
     assert ref["on_target_pct"] == pytest.approx(37.5)
     assert np.isnan(pooled_shot_quality(pool.iloc[0:0])["npxg_per_shot"])
+
+
+# --- valeur vs performance -----------------------------------------------------------------
+def test_huber_resiste_aux_valeurs_aberrantes():
+    rng = np.random.default_rng(0)
+    n = 2000
+    lv = rng.uniform(5.5, 8.2, n)
+    y = 5.0 + 0.3 * lv + rng.normal(0, 0.25, n)
+    y[:100] += 2.0  # 5 % de valeurs aberrantes
+    X = np.column_stack([np.ones(n), lv])
+    beta, scale = huber_fit(X, y)
+    ols = np.linalg.lstsq(X, y, rcond=None)[0]
+    assert beta[1] == pytest.approx(0.3, abs=0.02)
+    assert abs(beta[0] - 5.0) < abs(ols[0] - 5.0)  # moindres carrés tirés vers le haut par les aberrants
+    assert scale == pytest.approx(0.25, rel=0.15)
+
+
+def value_pool(n=80, leagues=None, seed=1):
+    rng = np.random.default_rng(seed)
+    value = 10 ** rng.uniform(5.5, 8.0, n)
+    df = pd.DataFrame({"player_id": range(n), "pos": rng.choice(list("DMF"), n), "value": value,
+                       "age": rng.uniform(18, 34, n)})
+    df["score"] = 5 + 0.3 * np.log10(value) + rng.normal(0, 0.1, n)
+    if leagues:
+        df["league"] = rng.choice(leagues, n)
+    return df
+
+
+def test_modele_valeur_joueur_sous_evalue_en_tete():
+    pool = value_pool()
+    pool.loc[0, "score"] += 1.5  # performance très au-dessus de ce que sa valeur laisse attendre
+    out = value_model(pool, "score")
+    assert out.iloc[0]["player_id"] == 0
+    assert out["z"].is_monotonic_decreasing
+    assert np.allclose(out["gap"], out["score"] - out["expected"])
+    assert out.attrs["slope"] == pytest.approx(0.3, abs=0.05)
+    assert out.attrs["n"] == len(pool) and 0 < out.attrs["r2"] <= 1
+
+
+def test_modele_valeur_trop_peu_de_joueurs_ou_sans_valeur():
+    assert value_model(value_pool(n=20), "score").empty
+    pool = value_pool()
+    pool["value"] = np.nan
+    assert value_model(pool, "score").empty
+    assert value_model(pd.DataFrame(), "score").empty
+
+
+def test_modele_valeur_plusieurs_championnats():
+    out = value_model(value_pool(n=200, leagues=["L1", "PL", "Liga"]), "score", use_age=False)
+    coef = out.attrs["coef"]
+    assert "age" not in coef
+    assert sum(k in coef for k in ("L1", "PL", "Liga")) == 2  # une ligue de référence (drop_first)

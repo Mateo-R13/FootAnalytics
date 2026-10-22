@@ -64,3 +64,19 @@ def test_ecriture_atomique(tmp_path):
     sofascore.write_atomic(target, b'{"ok": 1}')
     assert json.loads(target.read_text("utf-8")) == {"ok": 1}
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_cache_des_effectifs_allege(tmp_path, monkeypatch):
+    from footapp.data import SQUAD_FIELDS, _slim_squad
+
+    client = SofascoreClient(tmp_path)
+    response = {"players": [{"player": {"id": 1, "name": "A", "slug": "a", "fieldTranslations": {"x": "y"},
+                                        "country": {"name": "France", "alpha2": "FR"},
+                                        "team": {"id": 9, "name": "X"}}}],
+                "supportStaff": [{"id": 3}], "nationalTeamPlayerStatistics": [1]}
+    monkeypatch.setattr(client, "_fetch", lambda path, raw=False: response)
+    assert client.get("/team/9/players", slim=_slim_squad) == _slim_squad(response)
+    stored = json.loads(next((tmp_path / "temp").glob("*.json")).read_text("utf-8"))["data"]
+    assert stored.keys() == {"players"}  # rien d'autre n'est écrit sur le disque
+    assert set(stored["players"][0]["player"]) <= set(SQUAD_FIELDS)
+    assert stored["players"][0]["player"]["country"] == {"name": "France"}

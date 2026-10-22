@@ -2,14 +2,16 @@
 
 Usage (depuis la racine du projet) :
     .venv\\Scripts\\python.exe -m tests.record_fixtures
+    .venv\\Scripts\\python.exe -m tests.record_fixtures --squads   (ajoute seulement les effectifs)
 
 Rejoue un scénario représentatif (Ligue 1 : classement, joueurs, un match, un joueur, tirs et heatmap de la
-saison de deux joueurs, matchs de la saison des deux sources, prochains matchs) et sauvegarde toutes les
+saison de deux joueurs, matchs de la saison des deux sources, prochains matchs, effectifs) et sauvegarde toutes les
 réponses dans tests/fixtures/api.json.gz.
 À relancer si une source change son format ou pour rafraîchir les données de test.
 """
 import gzip
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -26,8 +28,8 @@ class RecordingClient(SofascoreClient):
         super().__init__(cache_dir)
         self.recorded = {}
 
-    def get(self, path, ttl=3600, permanent=False):
-        data = super().get(path, ttl=0, permanent=False)  # toujours une réponse fraîche
+    def get(self, path, ttl=3600, permanent=False, slim=None):
+        data = super().get(path, ttl=0, permanent=False, slim=slim)  # toujours une réponse fraîche (allégée)
         self.recorded[path] = data
         return data
 
@@ -73,6 +75,7 @@ def main():
         data.team_matches(UT, sid)               # chemin Understat
         data._sofascore_team_matches(UT, sid)    # chemin Sofascore (stats de chaque match)
         data.upcoming_events(UT, sid)
+        data.squad_profiles(players["team_id"].dropna().astype(int).unique())  # valeurs et contrats
 
         meta = {"ut": UT, "sid": sid, "round": rnd, "event": {**event, "date": event["date"].isoformat()},
                 "player_id": pid, "shooter_id": shooter, "season_start": data.season_start(UT, sid)}
@@ -83,5 +86,29 @@ def main():
               f"({FIXTURE.stat().st_size / 1024:.0f} Ko)")
 
 
+class _Replay:
+    def __init__(self, responses):
+        self.responses = responses
+
+    def get(self, path, ttl=3600, permanent=False, slim=None):
+        return self.responses[path]
+
+
+def add_squads():
+    """Ajoute aux réponses déjà enregistrées les effectifs des équipes des joueurs enregistrés (une requête par
+    équipe), sans rien réenregistrer d'autre : les autres tests gardent leurs données."""
+    with gzip.open(FIXTURE, "rt", encoding="utf-8") as f:
+        saved = json.load(f)
+    meta = saved["meta"]
+    players = FootData(_Replay(saved["responses"])).player_season_stats(meta["ut"], meta["sid"])
+    with tempfile.TemporaryDirectory() as tmp:
+        client = RecordingClient(Path(tmp))
+        FootData(client).squad_profiles(players["team_id"].dropna().astype(int).unique())
+    saved["responses"].update(client.recorded)
+    with gzip.open(FIXTURE, "wt", encoding="utf-8") as f:
+        json.dump(saved, f)
+    print(f"{len(client.recorded)} effectifs ajoutés -> {FIXTURE} ({FIXTURE.stat().st_size / 1024:.0f} Ko)")
+
+
 if __name__ == "__main__":
-    main()
+    add_squads() if "--squads" in sys.argv else main()

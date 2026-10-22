@@ -14,6 +14,11 @@ from footapp.data import FootData
 FIXTURE = Path(__file__).parent / "fixtures" / "api.json.gz"
 
 
+def _slimmed(data, slim):
+    """Même traitement que SofascoreClient.get(slim=…) : allègement appliqué aux réponses présentes."""
+    return slim(data) if slim is not None and data is not None else data
+
+
 class ReplayClient:
     """Remplace SofascoreClient : renvoie les réponses enregistrées par record_fixtures.py."""
 
@@ -21,11 +26,11 @@ class ReplayClient:
         self.responses = responses
         self.requested = []
 
-    def get(self, path, ttl=3600, permanent=False):
+    def get(self, path, ttl=3600, permanent=False, slim=None):
         self.requested.append(path)
         if path not in self.responses:
             raise AssertionError(f"Réponse non enregistrée : {path} (relancer tests/record_fixtures.py)")
-        return self.responses[path]
+        return _slimmed(self.responses[path], slim)
 
     def get_image(self, path, ttl=0):
         return None
@@ -35,9 +40,9 @@ class LenientReplayClient(ReplayClient):
     """Tests d'interface : une ressource non enregistrée est traitée comme absente (404), ce qui vérifie
     au passage que l'interface supporte les données manquantes."""
 
-    def get(self, path, ttl=3600, permanent=False):
+    def get(self, path, ttl=3600, permanent=False, slim=None):
         self.requested.append(path)
-        return self.responses.get(path)
+        return _slimmed(self.responses.get(path), slim)
 
     def cache_size_mb(self):
         return 0.0
@@ -66,9 +71,9 @@ class ReplayUnderstat:
 class FailingClient(ReplayClient):
     """Sofascore indisponible : toute requête hors saisons échoue (pour tester le secours Understat)."""
 
-    def get(self, path, ttl=3600, permanent=False):
+    def get(self, path, ttl=3600, permanent=False, slim=None):
         if path.endswith("/seasons"):
-            return super().get(path, ttl, permanent)
+            return super().get(path, ttl, permanent, slim)
         raise ApiError("Sofascore indisponible (test)")
 
 

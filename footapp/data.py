@@ -111,6 +111,28 @@ def _ratio(num, den, scale=1.0):
         return np.where(den > 0, num / den * scale, np.nan)
 
 
+FEET = {"Right": "Droit", "Left": "Gauche", "Both": "Les deux"}
+# Champs gardés des effectifs (/team/{id}/players) : la réponse brute pèse ~500 Ko par équipe, ~10 Ko ainsi
+SQUAD_FIELDS = ("id", "name", "position", "positionsDetailed", "proposedMarketValueRaw", "dateOfBirthTimestamp",
+                "contractUntilTimestamp", "height", "preferredFoot", "country")
+
+
+def _slim_squad(data: dict) -> dict:
+    """Ne garde de l'effectif que les champs utiles (idempotent : s'applique aussi à une réponse déjà allégée)."""
+    players = []
+    for entry in (data or {}).get("players") or []:
+        p = entry.get("player") or {}
+        kept = {k: p[k] for k in SQUAD_FIELDS if k in p}
+        if isinstance(kept.get("country"), dict):
+            kept["country"] = {"name": kept["country"].get("name")}
+        players.append({"player": kept})
+    return {"players": players}
+
+
+def _timestamp(value):
+    return pd.to_datetime(value, unit="s") if isinstance(value, (int, float)) else pd.NaT
+
+
 class FootData:
     def __init__(self, client: SofascoreClient, understat: UnderstatClient | None = None):
         self.client = client
@@ -251,12 +273,69 @@ class FootData:
             "position": POSITIONS.get(p.get("position"), p.get("position") or ""),
             "age": age,
             "height": p.get("height"),
-            "foot": {"Right": "Droit", "Left": "Gauche", "Both": "Les deux"}.get(p.get("preferredFoot"), "-"),
+            "foot": FEET.get(p.get("preferredFoot"), "-"),
             "country": (p.get("country") or {}).get("name", ""),
             "shirt": p.get("shirtNumber") or p.get("jerseyNumber"),
             "value": f"{value / 1e6:.1f} M€" if value else "-",
             "contract": datetime.fromtimestamp(contract).strftime("%m/%Y") if contract else "-",
         }
+
+    # --- joueurs : valeurs et contrats (effectifs actuels) -----------------------------
+    PROFILE_COLUMNS = ("player_id", "value", "birth", "age", "contract_until", "height", "foot", "nationality",
+                       "positions", "squad_team_id")
+
+    def squad_profiles(self, team_ids, progress=None) -> pd.DataFrame:
+        """Valeur estimée (Sofascore), âge, fin de contrat… des joueurs des effectifs ACTUELS : une requête par
+        équipe. Une équipe en erreur est ignorée et comptée (attrs["missing_teams"]) ; après 3 échecs de suite
+        (réseau coupé, blocage), les suivantes ne sont plus demandées."""
+        team_ids = [int(t) for t in team_ids]
+        rows, missing, failures = [], [], 0
+        today = pd.Timestamp.today().normalize()
+        for i, tid in enumerate(team_ids):
+            if progress:
+                progress(f"Valeurs et contrats : équipe {i + 1}/{len(team_ids)}")
+            if failures >= 3:
+                missing.append(tid)
+                continue
+            try:
+                data = self.client.get(f"/team/{tid}/players", ttl=72 * HOUR, slim=_slim_squad) or {}
+                failures = 0
+            except ApiError:
+                failures += 1
+                missing.append(tid)
+                continue
+            for entry in data.get("players") or []:
+                p = entry.get("player") or {}
+                if p.get("id") is None:
+                    continue
+                raw = p.get("proposedMarketValueRaw") or {}
+                value = raw.get("value") if raw.get("currency") == "EUR" else None
+                rows.append({
+                    "player_id": int(p["id"]), "value": float(value) if value else np.nan,
+                    "birth": _timestamp(p.get("dateOfBirthTimestamp")),
+                    "contract_until": _timestamp(p.get("contractUntilTimestamp")),
+                    "height": p.get("height"), "foot": FEET.get(p.get("preferredFoot"), ""),
+                    "nationality": (p.get("country") or {}).get("name") or "",
+                    "positions": "/".join(p.get("positionsDetailed") or []) or p.get("position") or "",
+                    "squad_team_id": tid,
+                })
+        df = pd.DataFrame(rows, columns=[c for c in self.PROFILE_COLUMNS if c != "age"])
+        df = df.drop_duplicates("player_id").reset_index(drop=True)
+        df["birth"] = pd.to_datetime(df["birth"])
+        df["contract_until"] = pd.to_datetime(df["contract_until"])
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df["height"] = pd.to_numeric(df["height"], errors="coerce")
+        df.insert(3, "age", (today - df["birth"]).dt.days / 365.25)
+        df.attrs["missing_teams"] = missing
+        return df
+
+    @staticmethod
+    def add_profiles(players: pd.DataFrame, profiles: pd.DataFrame | None) -> pd.DataFrame:
+        """Joueurs + valeurs et contrats (jointure sur player_id ; colonnes vides si l'effectif est inconnu)."""
+        if players is None or players.empty or profiles is None or "player_id" not in players:
+            return players
+        cols = [c for c in FootData.PROFILE_COLUMNS if c not in players.columns or c == "player_id"]
+        return players.merge(profiles[cols], on="player_id", how="left")
 
     def player_matches(self, pid: int, ut: int, sid: int) -> pd.DataFrame:
         """Matchs du joueur dans la compétition/saison choisie (note, minutes, buts...)."""
