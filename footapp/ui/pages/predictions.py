@@ -11,8 +11,8 @@ from . import Page
 class PredictionsPage(Page):
     key = "predictions"
     title = "Pronostics"
-    subtitle = ("Probabilités des prochains matchs selon un modèle de Poisson fondé sur les xG de la saison · "
-                "simulez aussi n'importe quelle affiche")
+    subtitle = ("Probabilités des prochains matchs : modèle de Poisson (Dixon-Coles) sur les xG et les buts, matchs "
+                "récents favorisés, saison précédente en point de départ · simulez aussi n'importe quelle affiche")
     icon_name = "fa5s.chart-pie"
 
     def __init__(self, state):
@@ -62,10 +62,15 @@ class PredictionsPage(Page):
         for k in (self.k_matches, self.k_accuracy, self.k_brier, self.k_verdict):
             kpis.addWidget(k)
         self.calib_chart = ChartWidget()
+        self.compare_chart = ChartWidget()
         self.bt_table = DataTable()
         self.bt_table.model_.set_color("Correct", lambda v: theme.GOOD_TEXT if v == "Oui" else theme.BAD_TEXT)
         reliability = QSplitter(Qt.Horizontal)
-        reliability.addWidget(chart_card(self.calib_chart))
+        charts_col = QSplitter(Qt.Vertical)
+        charts_col.addWidget(chart_card(self.compare_chart))
+        charts_col.addWidget(chart_card(self.calib_chart))
+        charts_col.setSizes([200, 420])
+        reliability.addWidget(charts_col)
         reliability.addWidget(table_card(self.bt_table, "Matchs rejoués", "le modèle ne connaît que le passé"))
         reliability.setSizes([560, 680])
         rel_page = QWidget()
@@ -108,11 +113,12 @@ class PredictionsPage(Page):
 
     def _run_backtest(self, tm):
         """Rejoue le modèle en arrière-plan (quelques secondes sur une saison complète)."""
-        ctx = self.ctx
+        ctx, prior = self.ctx, self.state.team_prior
         self.calib_chart.message("Évaluation du modèle sur les matchs joués…")
+        self.compare_chart.message("Comparaison avec l'ancien modèle…")
 
         def job(progress):
-            bt = backtest(tm)
+            bt = backtest(tm, prior=prior)
             return bt, backtest_summary(bt)
 
         self.state.runner.run("backtest", job, lambda result: self._on_backtest(result, ctx))
@@ -125,13 +131,14 @@ class PredictionsPage(Page):
             for k in (self.k_matches, self.k_accuracy, self.k_brier, self.k_verdict):
                 k.set("-")
             self.bt_table.set_dataframe(pd.DataFrame())
+            self.compare_chart.message("Pas encore assez de matchs joués")
             return self.calib_chart.message("Pas encore assez de matchs joués pour évaluer le modèle "
                                             "(3 matchs par équipe minimum)")
         n, acc, brier, base = summary["n"], summary["accuracy"], summary["brier"], summary["brier_base"]
         self.k_matches.set(str(n), f"{ctx.label}")
-        self.k_accuracy.set(f"{acc:.0%}", "issue la plus probable = résultat réel (hasard : 33 %)")
+        self.k_accuracy.set(f"{acc:.0%}", f"ancien modèle : {summary['accuracy_old']:.0%} · hasard : 33 %")
         gain = (base - brier) / base if base else 0
-        self.k_brier.set(f"{brier:.3f}", f"référence naïve : {base:.3f} (plus bas = mieux)")
+        self.k_brier.set(f"{brier:.3f}", f"ancien : {summary['brier_old']:.3f} · naïf : {base:.3f} · plus bas = mieux")
         if n < 60:
             verdict = "Échantillon trop court : choisissez la saison précédente pour un bilan solide"
         elif gain > 0.03:
@@ -140,9 +147,12 @@ class PredictionsPage(Page):
             verdict = "Légèrement meilleur que la référence"
         else:
             verdict = "Pas meilleur que la référence"
-        self.k_verdict.set(verdict)
+        self.k_verdict.set(verdict, "a priori : saison précédente" if self.state.team_prior
+                           else "sans saison précédente (hors 5 grands championnats)")
+        charts.model_comparison(self.compare_chart, summary)
         charts.calibration(self.calib_chart, summary["calibration"], "Le modèle est-il bien calibré ?",
-                           "Annoncé ~50 % → arrivé ~50 % du temps ? · taille = nb d'issues")
+                           "Annoncé ~50 % → arrivé ~50 % du temps ? · taille = nb d'issues",
+                           summary["calibration_old"])
         view = bt.assign(Date=bt["date"].dt.strftime("%d/%m/%Y"),
                          Correct=bt["Correct"].map({True: "Oui", False: "Non"}))
         cols = ["Date", "Domicile", "Extérieur", "Score", "1 %", "N %", "2 %", "Pronostic", "Résultat", "Correct"]
@@ -172,7 +182,7 @@ class PredictionsPage(Page):
         rows = []
         for e in self.upcoming:
             h, a = by_id.get(e["home_id"], e["home"]), by_id.get(e["away_id"], e["away"])
-            p = predict_match(tm, h, a)
+            p = predict_match(tm, h, a, self.state.team_prior)
             if p is None:
                 continue
             rows.append({"Domicile": e["home"], "Extérieur": e["away"],
@@ -212,4 +222,5 @@ class PredictionsPage(Page):
         tm = self.state.team_matches
         if tm is None:
             return
-        charts.prediction(self.chart, predict_match(tm, model_home, model_away), label_home, label_away)
+        charts.prediction(self.chart, predict_match(tm, model_home, model_away, self.state.team_prior),
+                          label_home, label_away)

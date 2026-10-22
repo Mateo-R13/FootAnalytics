@@ -75,6 +75,7 @@ def main():
         teams = standings[["Équipe", "team_id"]].rename(columns={"Équipe": "name"}).head(2)
         data.team_season_stats(UT, sid, teams)
         data.team_matches(UT, sid)               # chemin Understat
+        data.model_prior(UT, sid)                # saison précédente (a priori du modèle de pronostic)
         data._sofascore_team_matches(UT, sid)    # chemin Sofascore (stats de chaque match)
         data.upcoming_events(UT, sid)
         data.squad_profiles(players["team_id"].dropna().astype(int).unique())  # valeurs et contrats
@@ -100,9 +101,12 @@ def _record_history(client, understat, team_id):
 
 
 def _slim_understat(recorded: dict, meta: dict) -> dict:
-    """Saisons Understat passées : seules les équipes servent (historique) -> ~600 Ko de moins par saison."""
+    """Saisons Understat passées : seules les équipes servent (historique) -> ~600 Ko de moins par saison ; la
+    saison précédente garde aussi la liste des matchs (a priori du modèle de pronostic)."""
     current = f"{meta['ut']}/{meta['season_start']}"
-    return {k: v if k == current else {"teams": v["teams"]} for k, v in recorded.items()}
+    previous = f"{meta['ut']}/{meta['season_start'] - 1}"
+    return {k: v if k == current else {"teams": v["teams"], **({"dates": v["dates"]} if k == previous else {})}
+            for k, v in recorded.items()}
 
 
 class _Replay:

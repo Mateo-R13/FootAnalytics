@@ -81,8 +81,28 @@ def test_pronostic(data, meta):
     p = predict_match(tm, best, worst)
     assert p["home_win"] > p["away_win"]
     assert p["home_win"] + p["draw"] + p["away_win"] == pytest.approx(1, abs=1e-3)
-    assert p["basis"] == "xG"
+    assert p["basis"] == "xG et buts" and not p["prior"]
     assert predict_match(tm, best, "Équipe inconnue") is None
+
+
+def test_a_priori_saison_precedente(data, data_sofascore_only, meta):
+    """5 grands championnats : forces de la saison précédente (Understat) ; promus absents de l'a priori."""
+    tm = data.team_matches(meta["ut"], meta["sid"])
+    prior = data.model_prior(meta["ut"], meta["sid"])
+    assert prior is not None and np.isfinite(list(prior["att"].values())).all()
+    teams = set(tm["team"])
+    assert 0 < len(teams - set(prior["att"])) <= 4, "quelques promus, le reste de la ligue connu"
+    team = tm["team"].iloc[0]
+    other = next(t for t in teams if t != team)
+    p = predict_match(tm, team, other, prior)
+    assert p["prior"] and p["home_win"] + p["draw"] + p["away_win"] == pytest.approx(1, abs=1e-6)
+    bt = backtest(tm, prior=prior)
+    assert not bt.empty and backtest_summary(bt)["n"] == len(bt)
+    # sans Understat (autres championnats) ou saison précédente indisponible : pas d'a priori, sans erreur
+    assert data_sofascore_only.model_prior(meta["ut"], meta["sid"]) is None
+    data.understat.responses = {k: v for k, v in data.understat.responses.items()
+                                if k != f"{meta['ut']}/{meta['season_start'] - 1}"}
+    assert data.model_prior(meta["ut"], meta["sid"]) is None
 
 
 def test_bilan_des_pronostics(data, meta):

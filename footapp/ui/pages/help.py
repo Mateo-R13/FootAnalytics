@@ -64,10 +64,21 @@ GLOSSARY = [
      "classement officiel Sofascore (pénalités de points incluses) ; xG, xPts et PPDA : Understat pour les 5 grands "
      "championnats, sinon statistiques de saison Sofascore (xG quand ils existent, grosses occasions, PPDA "
      "approché). Pas d'historique pour les coupes d'Europe (format changé en 24/25)."),
-    ("Pronostics", "Modèle de Poisson : forces d'attaque et de défense calculées sur les xG de la saison, avantage du "
-     "terrain. Indicatif : ne connaît ni les absences ni la forme du moment."),
-    ("Score de Brier", "Erreur moyenne des probabilités annoncées (0 = parfait, plus bas = mieux), comparée à une "
-     "référence naïve qui annoncerait toujours la répartition moyenne victoire / nul / défaite."),
+    ("Pronostics", "Modèle de Poisson : forces d'attaque et de défense et avantage du terrain estimés par maximum de "
+     "vraisemblance sur un mélange 70 % xG / 30 % buts réels ; un match d'il y a 4 mois compte moitié moins qu'un "
+     "match récent. Pour les 5 grands championnats, les forces de la saison précédente servent de point de départ "
+     "(promus : niveau moyen des relégués), puis s'effacent à mesure que les matchs s'accumulent ; ailleurs, point "
+     "de départ = moyenne de la ligue. Correction de Dixon-Coles : 0-0 et 1-1 un peu plus probables. Indicatif : ne "
+     "connaît pas les absences."),
+    ("Fiabilité du modèle", "Pronostics : le modèle est rejoué sur les matchs déjà joués en ne connaissant que le "
+     "passé, comparé à l'ancien modèle (v2.4 : moyennes de xG de la saison) et à une référence naïve. Réglé sur les "
+     "saisons 22/23 et 23/24 des 5 grands championnats, validé sur 24/25 à 26/27 (≈ 3 400 matchs) : Brier 0,587 "
+     "contre 0,596, gain surtout en début de saison."),
+    ("Score de Brier", "Erreur moyenne des probabilités annoncées (0 = parfait, plus bas = mieux), comparée à l'ancien "
+     "modèle et à une référence naïve qui annoncerait toujours la répartition moyenne victoire / nul / défaite. "
+     "IC 95 % : intervalle de confiance de l'écart (bootstrap) ; s'il contient 0, l'écart n'est pas significatif."),
+    ("Log-loss", "Pronostics : −log de la probabilité donnée au résultat réel, en moyenne (plus bas = mieux). Punit "
+     "fortement un résultat annoncé presque impossible."),
     ("Avant-match", "Pronostics : bouton « Avant-match » ou double-clic sur un match. Pronostic du modèle, classement "
      "et rang xPts, forme, repos (jours depuis le dernier match, matchs sur 14 jours, toutes compétitions), profils, "
      "joueurs clés, absents, XI probable et 10 dernières confrontations officielles (amicaux exclus ; score sans les "

@@ -48,7 +48,7 @@ def _days(rest: dict) -> str:
 
 
 def compose(event: dict, bundle: dict | None, tm: pd.DataFrame | None, by_id: dict, standings: pd.DataFrame,
-            players: pd.DataFrame, teams: pd.DataFrame | None, summary: dict | None) -> dict:
+            players: pd.DataFrame, teams: pd.DataFrame | None, summary: dict | None, prior: dict | None = None) -> dict:
     """Tout le contenu de l'avant-match (écran et PDF) à partir des données disponibles ; chaque partie manquante
     est remplacée par None ou un tableau vide. Calcul léger (< 0,1 s)."""
     bundle = bundle or {}
@@ -60,7 +60,7 @@ def compose(event: dict, bundle: dict | None, tm: pd.DataFrame | None, by_id: di
          "kickoff": info.get("date") or event.get("date"), "summary": summary, "bundle": bool(bundle)}
     mh, ma = by_id.get(hid), by_id.get(aid)
     has_tm = tm is not None and not tm.empty
-    c["pred"] = predict_match(tm, mh, ma) if has_tm and mh and ma else None
+    c["pred"] = predict_match(tm, mh, ma, prior) if has_tm and mh and ma else None
 
     # échantillon : matchs de la compétition (lignes du modèle, sinon classement)
     counts = tm.groupby("team").size() if has_tm else pd.Series(dtype=int)
@@ -265,8 +265,8 @@ def build_pdf(path: str, c: dict, competition: str):
     figures.append(report.tables_page("Confrontations et absences", [
         (h2h_text(c), h2h),
         (f"Absents annoncés ({ESTIMATES})" if not absences.empty else NO_ABSENCES, absences)],
-        "Le modèle de pronostic ne tient compte ni des absences ni de la forme récente : à lire à côté des "
-        "probabilités."))
+        "Le modèle de pronostic ne tient pas compte des absences (la forme n'y entre que par le poids des matchs "
+        "récents) : à lire à côté des probabilités."))
     report.save(path, figures)
     return path
 
@@ -535,8 +535,10 @@ class PrematchPage(Page):
         self.summary = None
         self._render()
 
+        prior = self.state.team_prior
+
         def job(progress):
-            return backtest_summary(backtest(tm))
+            return backtest_summary(backtest(tm, prior=prior))
 
         self.state.runner.run("prematch_backtest", job, lambda summary: self._on_summary(summary, ctx))
 
@@ -566,7 +568,7 @@ class PrematchPage(Page):
         self._load_teams()
         _, by_id = self.state.model_team_names()
         c = self.content = compose(self.event, self.bundle, self.state.team_matches, by_id, self.state.standings,
-                                   self.state.players, self.teams, self.summary)
+                                   self.state.players, self.teams, self.summary, self.state.team_prior)
         loading = self.bundle is None
         self.info.setText("\n".join(info_lines(c, self.ctx.competition)))
         self.badge.setVisible(not c["reliable"] and self.state.team_matches is not None)
@@ -633,7 +635,8 @@ class PrematchPage(Page):
         p = c["pred"]
         if p:
             self.k_home.set(f"{p['home_win']:.0%}", c["home_short"])
-            self.k_draw.set(f"{p['draw']:.0%}", "modèle de Poisson" + ("" if c["reliable"] else " · fiabilité réduite"))
+            self.k_draw.set(f"{p['draw']:.0%}", "Poisson / Dixon-Coles"
+                            + ("" if c["reliable"] else " · fiabilité réduite"))
             self.k_away.set(f"{p['away_win']:.0%}", c["away_short"])
             self.k_goals.set(f"{p['lam_home']:.1f} - {p['lam_away']:.1f}", f"base : {p['basis']} · hors absences")
         else:
@@ -646,7 +649,7 @@ class PrematchPage(Page):
             self.k_model.set("-", "pas encore assez de matchs joués")
         else:
             self.k_model.set(f"{s['accuracy']:.0%}", f"bons pronostics sur {s['n']} matchs · Brier {s['brier']:.3f} "
-                                                     f"(référence {s['brier_base']:.3f})")
+                                                     f"(ancien {s['brier_old']:.3f}, naïf {s['brier_base']:.3f})")
 
     def _open_player(self, rec):
         pid = rec.get("player_id")

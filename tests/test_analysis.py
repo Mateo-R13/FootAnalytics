@@ -332,3 +332,104 @@ def test_radar_equipes_centile_manquant_vide():
     assert pd.isna(pct.loc[0, "goalsScored"])  # jamais remplacé par 0
     values = pct[keys].to_numpy().ravel()
     assert ((values[~np.isnan(values)] >= 0) & (values[~np.isnan(values)] <= 100)).all()
+
+
+# --- modèle de pronostic ----------------------------------------------------------------
+def synthetic_season(n_teams=10, rounds=2, seed=0, start="2025-08-10"):
+    """Championnat aller-retour simulé (forces connues) : lignes équipe x match comme FootData.team_matches."""
+    rng = np.random.default_rng(seed)
+    teams = [f"T{i}" for i in range(n_teams)]
+    att = np.linspace(-0.4, 0.4, n_teams)  # T9 : meilleure attaque
+    dfn = -att / 2                           # ... et meilleure défense
+    rows, day = [], pd.Timestamp(start)
+    for r in range(rounds):
+        for k in range(n_teams - 1):  # méthode du cercle : chaque équipe joue une fois par journée
+            order = [0, *np.roll(range(1, n_teams), k)]
+            for i in range(n_teams // 2):
+                h, a = order[i], order[-1 - i]
+                if (k + r) % 2:
+                    h, a = a, h
+                lh, la = np.exp(0.35 + att[h] + dfn[a]), np.exp(0.15 + att[a] + dfn[h])
+                gh, ga = rng.poisson(lh), rng.poisson(la)
+                xh, xa = lh * rng.uniform(0.8, 1.2), la * rng.uniform(0.8, 1.2)
+                sides = ((h, a, "Dom.", gh, ga, xh, xa), (a, h, "Ext.", ga, gh, xa, xh))
+                for team, opp, venue, gf, gc, xg, xga in sides:
+                    rows.append({"date": day + pd.Timedelta(hours=15 + i), "team": teams[team], "opponent": teams[opp],
+                                 "venue": venue, "gf": gf, "ga": gc, "xg": xg, "xga": xga})
+            day += pd.Timedelta(days=7)
+    tm = pd.DataFrame(rows).sort_values(["date", "team"]).reset_index(drop=True)
+    tm["result"] = np.select([tm["gf"] > tm["ga"], tm["gf"] == tm["ga"]], ["V", "N"], "D")
+    return tm
+
+
+def test_dixon_coles():
+    from footapp.analysis import outcome_probabilities, score_matrix
+
+    plain = np.outer(*(np.exp(-lam) * lam ** np.arange(11) / np.cumprod(np.r_[1, np.arange(1, 11)])
+                       for lam in (1.6, 0.9)))
+    assert np.allclose(score_matrix(1.6, 0.9, rho=0.0), plain)  # rho = 0 : Poisson indépendant
+    for lh, la in ((1.6, 0.9), (0.3, 0.2), (3.5, 2.8)):
+        m = score_matrix(lh, la, rho=-0.1)
+        assert m.sum() == pytest.approx(1) and (m >= 0).all()
+        assert sum(outcome_probabilities(lh, la, -0.1)) == pytest.approx(1)
+        # rho < 0 : plus de nuls (0-0, 1-1) que sous Poisson indépendant
+        assert outcome_probabilities(lh, la, -0.1)[1] > outcome_probabilities(lh, la)[1]
+    m0, m1 = score_matrix(1.2, 1.0), score_matrix(1.2, 1.0, -0.1)
+    assert m1[0, 0] > m0[0, 0] and m1[1, 0] < m0[1, 0] and m1[2:, 2:].sum() > 0
+
+
+def test_forces_retrouvees_et_avantage_du_terrain():
+    from footapp.analysis import predict_match, team_strengths
+
+    tm = synthetic_season(rounds=4)
+    strengths, league = team_strengths(tm)
+    true = np.linspace(-0.4, 0.4, 10)
+    assert np.corrcoef(np.log(strengths.loc[[f"T{i}" for i in range(10)], "att"]), true)[0, 1] > 0.9
+    assert league["home"] > league["away"]
+    p = predict_match(tm, "T9", "T0")
+    assert p["home_win"] > 0.6 and p["home_win"] + p["draw"] + p["away_win"] == pytest.approx(1)
+    assert predict_match(tm, "T9", "Inconnue") is None and predict_match(tm.iloc[0:0], "T9", "T0") is None
+
+
+def test_a_priori_saison_precedente():
+    from footapp.analysis import predict_match, season_prior, team_strengths
+
+    prev = synthetic_season(rounds=2, seed=1, start="2024-08-10")
+    prior = season_prior(prev)
+    assert set(prior["att"]) == {f"T{i}" for i in range(10)} and season_prior(None) is None
+    # nouvelle saison : T0 (le plus faible) est relégué, P (promu) arrive ; une seule journée jouée
+    cur = synthetic_season(rounds=1, seed=2, start="2025-08-10").replace("T0", "P")
+    cur = cur[cur["date"] < cur["date"].min() + pd.Timedelta(days=1)]
+    with_prior, _ = team_strengths(cur, prior)
+    without, _ = team_strengths(cur)
+    # en début de saison, l'a priori l'emporte : la hiérarchie de la saison précédente est conservée
+    assert with_prior.at["T9", "att"] > with_prior.at["T1", "att"]
+    assert abs(np.log(without["att"])).max() < abs(np.log(with_prior["att"])).max()
+    # promu : a priori = moyenne des relégués (ici T0, la plus faible attaque)
+    assert with_prior.at["P", "att"] < with_prior.at["T5", "att"]
+    assert predict_match(cur, "T9", "P", prior)["home_win"] > predict_match(cur, "T9", "P")["home_win"]
+
+
+def test_bilan_sans_fuite_d_information_future():
+    """Les pronostics d'une journée ne dépendent que des journées précédentes (a priori compris)."""
+    from footapp.analysis import backtest, backtest_summary, season_prior
+
+    prior = season_prior(synthetic_season(seed=1, start="2024-08-10"))
+    tm = synthetic_season(seed=3)
+    days = tm["date"].dt.normalize()
+    cut = days.unique()[10]
+    altered = tm.copy()
+    future = days >= cut  # journée `cut` et suivantes : résultats et xG absurdes
+    altered.loc[future, ["gf", "ga", "xg", "xga"]] = [9, 0, 6.0, 0.1]
+    for p in (None, prior):
+        before, after = backtest(tm, prior=p), backtest(altered, prior=p)
+        keep = before["date"].dt.normalize() <= cut  # y compris les matchs de la journée modifiée
+        cols = ["1 %", "N %", "2 %", "Ancien 1 %", "Ancien N %", "Ancien 2 %"]
+        pd.testing.assert_frame_equal(before.loc[keep, cols].reset_index(drop=True),
+                                      after.loc[after["date"].dt.normalize() <= cut, cols].reset_index(drop=True))
+    bt = backtest(tm, prior=prior)
+    assert np.allclose(bt[["1 %", "N %", "2 %"]].sum(axis=1), 100)
+    s = backtest_summary(bt)
+    assert s["n"] == len(bt) and s["brier_diff_ci"][0] <= s["brier_diff"] <= s["brier_diff_ci"][1]
+    assert s["calibration"]["n"].sum() == s["calibration_old"]["n"].sum() == 3 * len(bt)
+    assert backtest_summary(pd.DataFrame()) == {}

@@ -47,6 +47,7 @@ class AppState(QObject):
         self.standings = pd.DataFrame()
         self.players = pd.DataFrame()
         self.team_matches = None  # None = pas encore demandé pour ce contexte
+        self.team_prior = None    # a priori du modèle de pronostic (saison précédente), chargé avec team_matches
         self.big5 = None
         self.profiles = None        # valeurs et contrats des effectifs actuels (None = rien de chargé)
         self._profile_teams = set()  # équipes déjà chargées (ou en échec : pas de nouvel essai)
@@ -80,6 +81,7 @@ class AppState(QObject):
         self.standings = pd.DataFrame()
         self.players = pd.DataFrame()
         self.team_matches = None
+        self.team_prior = None
         self._loading.discard("team_matches")
         self.profiles = None
         self._profile_teams = set()
@@ -147,19 +149,23 @@ class AppState(QObject):
         self._loading.add("team_matches")
         ctx = self.ctx
 
-        def done(df):
+        def job(progress):
+            df = self.data.team_matches(ctx.ut, ctx.sid, progress)
+            # a priori du modèle : saison précédente (5 grands championnats seulement, en cache définitif)
+            return df, self.data.model_prior(ctx.ut, ctx.sid) if not df.empty else None
+
+        def done(result):
             self._loading.discard("team_matches")
             if ctx != self.ctx:
                 return
-            self.team_matches = df
-            self.team_matches_changed.emit(df)
+            self.team_matches, self.team_prior = result
+            self.team_matches_changed.emit(self.team_matches)
 
         def failed(message):
             self._loading.discard("team_matches")
             self.runner.error.emit(message)
 
-        self.runner.run("team_matches", lambda progress: self.data.team_matches(ctx.ut, ctx.sid, progress),
-                        done, failed)
+        self.runner.run("team_matches", job, done, failed)
 
     def request_big5(self):
         """Joueurs des 5 grands championnats (saison en cours), pour les comparaisons inter-ligues."""

@@ -7,7 +7,7 @@ from functools import partial
 import numpy as np
 import pandas as pd
 
-from .analysis import expected_points
+from .analysis import expected_points, season_prior
 from .api.sofascore import ApiError, SofascoreClient
 from .api.understat import UnderstatClient
 from .config import (
@@ -911,6 +911,22 @@ class FootData:
         if df["xpts"].isna().all() and df["xg"].notna().any():
             df["xpts"] = [expected_points(x, y) for x, y in zip(df["xg"], df["xga"], strict=True)]
         return df
+
+    def model_prior(self, ut: int, sid: int) -> dict | None:
+        """A priori du modèle de pronostic : forces de la saison précédente, uniquement là où c'est peu coûteux
+        (5 grands championnats : 1 requête Understat, en cache définitif). None ailleurs ou si Understat échoue."""
+        if self.understat is None or not self.understat.supports(ut):
+            return None
+        start = self.season_start(ut, sid)
+        if start < 2015:  # Understat commence en 2014-15
+            return None
+        try:
+            data = self.understat.league_data(ut, start - 1, ttl=float("inf"))
+        except ApiError:
+            return None
+        if not data.get("dates"):  # adversaires inconnus : pas d'a priori
+            return None
+        return season_prior(self._understat_team_matches(data))
 
     @staticmethod
     def _understat_team_matches(data: dict) -> pd.DataFrame:

@@ -562,26 +562,33 @@ def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
     ax3.tick_params(left=False, bottom=False)
     ax3.set_xticks([])
     ax3.set_title("Scores les plus probables", fontsize=9.5, color=theme.INK2)
-    fig.text(0.01, 0.005, f"Modèle de Poisson sur les {pred['basis']} de la saison (forces attaque/défense, "
-                          "avantage du terrain) - indicatif, ne tient compte ni des absences ni de la forme récente.",
+    start = " · départ : saison précédente" if pred.get("prior") else ""
+    fig.text(0.01, 0.005, f"Poisson / Dixon-Coles sur {pred['basis']} · matchs récents favorisés{start} · "
+                          "indicatif, hors absences",
              fontsize=7.5, color=theme.MUTED)
     chart.draw()
 
 
-def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: str):
-    """Probabilité annoncée vs fréquence observée : un modèle bien calibré suit la diagonale."""
+def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: str, calib_old=None):
+    """Probabilité annoncée vs fréquence observée : un modèle bien calibré suit la diagonale.
+    calib_old : même courbe pour l'ancien modèle (pointillés), pour comparaison."""
     fig = chart.clear()
     if calib is None or calib.empty:
         return chart.message("Pas assez de matchs pour évaluer le modèle")
     ax = fig.add_subplot()
     ax.plot([0, 100], [0, 100], color=theme.MUTED, lw=1, ls=":")
     ax.text(97, 92, "calibration parfaite", ha="right", fontsize=8, color=theme.MUTED, rotation=38)
+    if calib_old is not None and not calib_old.empty:
+        ax.plot(calib_old["predicted"] * 100, calib_old["observed"] * 100, color=theme.MUTED, lw=1.5, ls="--",
+                marker="o", ms=4, label="ancien modèle")
     x, y = calib["predicted"] * 100, calib["observed"] * 100
-    ax.plot(x, y, color=theme.HOME, lw=2)
+    ax.plot(x, y, color=theme.HOME, lw=2, label="modèle actuel")
     pts = ax.scatter(x, y, s=30 + calib["n"] / calib["n"].max() * 400, color=theme.HOME,
                      edgecolor=theme.SURFACE, linewidth=2, zorder=3)
     chart.add_hover(ax, pts, [f"Annoncé : {p:.0f} % en moyenne\nObservé : {o:.0f} %\n{n} issues"
                               for p, o, n in zip(x, y, calib["n"], strict=True)])
+    if calib_old is not None and not calib_old.empty:
+        ax.legend(loc="upper left", fontsize=8)
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 100)
     ax.set_xlabel("Probabilité annoncée par le modèle (%)")
@@ -589,6 +596,41 @@ def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: s
     ax.grid(True)
     ax.set_axisbelow(True)
     _title(ax, title, subtitle)
+    chart.draw()
+
+
+def model_comparison(chart: ChartWidget, summary: dict):
+    """Score de Brier (et log-loss) du modèle actuel, de l'ancien modèle et de la référence naïve : plus court =
+    meilleur. Axe resserré autour des valeurs : les écarts se jouent à quelques centièmes."""
+    fig = chart.clear()
+    if not summary:
+        return chart.message("Pas assez de matchs pour comparer les modèles")
+    ax = fig.add_subplot()
+    rows = [("Modèle actuel", summary["brier"], summary["logloss"], theme.HOME),
+            ("Ancien modèle (v2.4)", summary["brier_old"], summary["logloss_old"], theme.MUTED),
+            ("Référence naïve", summary["brier_base"], summary["logloss_base"], theme.DIV_MID)]
+    y = np.arange(len(rows))
+    values = [r[1] for r in rows]
+    ax.barh(y, values, height=0.6, color=[r[3] for r in rows], edgecolor=theme.SURFACE, linewidth=1)
+    ax.set_yticks(y, [r[0] for r in rows], fontsize=9)
+    ax.invert_yaxis()
+    for yi, (_, brier, ll, _) in zip(y, rows, strict=True):
+        ax.text(brier + 0.002, yi, f"{brier:.3f}  (log-loss {ll:.3f})", va="center", fontsize=8.5, color=theme.INK2)
+    lo = min(values) - 0.03
+    ax.set_xlim(lo, max(values) + 0.045)
+    ax.xaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.spines[["left", "bottom"]].set_visible(False)
+    ax.tick_params(left=False, bottom=False)
+    lo_ci, hi_ci = summary["brier_diff_ci"]
+    if hi_ci < 0:
+        verdict = "significatif"
+    elif lo_ci > 0:
+        verdict = "l'ancien fait mieux"
+    else:
+        verdict = "non significatif"
+    _title(ax, "Score de Brier sur les mêmes matchs (plus bas = mieux)",
+           f"actuel - ancien : {summary['brier_diff']:+.3f} (IC 95 % {lo_ci:+.3f} à {hi_ci:+.3f}, {verdict})")
     chart.draw()
 
 

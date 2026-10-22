@@ -272,21 +272,46 @@ def pooled_shot_quality(pool: pd.DataFrame) -> dict:
 MAX_GOALS = 10
 
 
+# Modèle de pronostic, réglé sur 2022-23 et 2023-24 puis validé sur 2024-25 à 2026-27 (5 grands championnats,
+# ~3 400 matchs rejoués sans connaître l'avenir) : Brier 0,587 contre 0,596 pour l'ancien modèle (moyennes de xG).
+XG_WEIGHT = 0.7      # cible : 70 % xG + 30 % buts réels (les buts gardent une part d'information)
+HALF_LIFE = 120      # jours : un match d'il y a 4 mois compte moitié moins qu'un match récent
+PRIOR_WEIGHT = 5.0   # poids de l'a priori « saison précédente », en matchs équivalents
+SHRINK = 3.0         # sans saison précédente : rappel vers la moyenne, en matchs équivalents
+DC_RHO = -0.1        # correction Dixon-Coles : 0-0 et 1-1 un peu plus fréquents que sous Poisson indépendant
+_HOME_PRIOR = 0.15   # avantage du terrain a priori (log), vite corrigé par les données
+_GLOBAL_WEIGHT = 20.0  # poids de l'a priori sur le niveau moyen et l'avantage du terrain, en matchs
+
+
 def _poisson(lam: float) -> np.ndarray:
     k = np.arange(MAX_GOALS + 1)
     log_fact = np.cumsum(np.r_[0, np.log(np.arange(1, MAX_GOALS + 1))])
     return np.exp(k * np.log(max(lam, 1e-9)) - lam - log_fact)
 
 
-def score_matrix(lam_home: float, lam_away: float) -> np.ndarray:
-    """Probabilités des scores [buts domicile, buts extérieur] (buts indépendants, loi de Poisson)."""
-    return np.outer(_poisson(lam_home), _poisson(lam_away))
+def score_matrix(lam_home: float, lam_away: float, rho: float = 0.0) -> np.ndarray:
+    """Probabilités des scores [buts domicile, buts extérieur] : lois de Poisson, avec la correction de Dixon-Coles
+    des petits scores si rho ≠ 0 (rho < 0 : plus de 0-0 et de 1-1, moins de 1-0 et de 0-1)."""
+    m = np.outer(_poisson(lam_home), _poisson(lam_away))
+    if rho:
+        m[0, 0] *= 1 - lam_home * lam_away * rho
+        m[0, 1] *= 1 + lam_home * rho
+        m[1, 0] *= 1 + lam_away * rho
+        m[1, 1] *= 1 - rho
+        m = np.clip(m, 0, None)
+        m /= m.sum()
+    return m
 
 
-def outcome_probabilities(lam_home: float, lam_away: float) -> tuple[float, float, float]:
+def outcome_probabilities(lam_home: float, lam_away: float, rho: float = 0.0) -> tuple[float, float, float]:
     """(victoire domicile, nul, victoire extérieur)."""
-    m = score_matrix(lam_home, lam_away)
+    m = score_matrix(lam_home, lam_away, rho)
     return float(np.tril(m, -1).sum()), float(np.trace(m)), float(np.triu(m, 1).sum())
+
+
+def _outcomes(lam_h, lam_a, rho: float) -> np.ndarray:
+    """outcome_probabilities pour plusieurs matchs : tableau (n, 3)."""
+    return np.array([outcome_probabilities(h, a, rho) for h, a in zip(lam_h, lam_a, strict=True)]).reshape(-1, 3)
 
 
 def expected_points(xg_for: float, xg_against: float) -> float:
@@ -327,104 +352,221 @@ def xg_table(tm: pd.DataFrame) -> pd.DataFrame:
     return t[["Rang", "Équipe"] + [c for c in t.columns if c not in ("Rang", "Équipe")]]
 
 
-def team_strengths(tm: pd.DataFrame, shrink: float = 3.0) -> tuple[pd.DataFrame, dict]:
-    """Forces offensive/défensive, ramenées vers la moyenne quand peu de matchs ont été joués.
-
-    Base xG si disponible (plus stable), sinon buts réels.
-    """
+def _model_matches(tm: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Une ligne par match (lignes « Dom. ») avec la cible du modèle : mélange xG / buts si les xG sont presque
+    tous connus, sinon buts réels."""
     use_xg = tm["xg"].notna().mean() > 0.8
-    f, a = ("xg", "xga") if use_xg else ("gf", "ga")
-    played = tm.dropna(subset=[f, a])
-    league = {
-        "home": played.loc[played["venue"] == "Dom.", f].mean(),
-        "away": played.loc[played["venue"] == "Ext.", f].mean(),
-        "all": played[f].mean(),
-        "basis": "xG" if use_xg else "buts réels",
-    }
-    g = played.groupby("team")
-    n = g.size()
-    att = (g[f].mean() / league["all"] * n + shrink) / (n + shrink)
-    dfn = (g[a].mean() / league["all"] * n + shrink) / (n + shrink)
-    return pd.DataFrame({"att": att, "def": dfn, "n": n}), league
+    h = tm[tm["venue"] == "Dom."].dropna(subset=["gf", "ga"])
+    yh, ya = h["gf"].astype(float), h["ga"].astype(float)
+    if use_xg:
+        yh = XG_WEIGHT * h["xg"].fillna(yh) + (1 - XG_WEIGHT) * yh
+        ya = XG_WEIGHT * h["xga"].fillna(ya) + (1 - XG_WEIGHT) * ya
+    m = pd.DataFrame({"date": h["date"].dt.normalize(), "home": h["team"], "away": h["opponent"],
+                      "yh": yh, "ya": ya, "gf": h["gf"], "ga": h["ga"],
+                      "xg": h["xg"].astype(float), "xga": h["xga"].astype(float)}).reset_index(drop=True)
+    return m, "xG et buts" if use_xg else "buts réels"
 
 
-def predict_match(tm: pd.DataFrame, home: str, away: str) -> dict | None:
-    """Pronostic de Poisson : buts attendus, probabilités 1N2, scores les plus probables."""
-    if tm.empty:
+def _fit(hi, ai, yh, ya, w, prior: np.ndarray, weight: float, theta=None, iters: int = 30) -> np.ndarray:
+    """Maximum de vraisemblance de Poisson pondéré, pénalisé vers l'a priori (Newton, quelques ms).
+
+    θ = [niveau, avantage du terrain, attaque(n), défense(n)] :
+    log λ dom. = niveau + terrain + attaque[dom.] + défense[ext.] ; log λ ext. = niveau + attaque[ext.] + défense[dom.].
+    `weight` : force du rappel vers l'a priori, en matchs équivalents.
+    """
+    n = (len(prior) - 2) // 2
+    rows = np.arange(len(hi))
+    xh = np.zeros((len(hi), len(prior)))
+    xh[:, :2] = 1
+    xh[rows, 2 + hi] = 1
+    xh[rows, 2 + n + ai] = 1
+    xa = np.zeros_like(xh)
+    xa[:, 0] = 1
+    xa[rows, 2 + ai] = 1
+    xa[rows, 2 + n + hi] = 1
+    pen = np.r_[_GLOBAL_WEIGHT, _GLOBAL_WEIGHT, np.full(2 * n, weight)] * np.exp(prior[0])
+    th = (prior if theta is None else theta).copy()
+    for _ in range(iters):
+        lh, la = np.exp(xh @ th), np.exp(xa @ th)
+        grad = xh.T @ (w * (yh - lh)) + xa.T @ (w * (ya - la)) - pen * (th - prior)
+        hess = (xh * (w * lh)[:, None]).T @ xh + (xa * (w * la)[:, None]).T @ xa + np.diag(pen)
+        step = np.linalg.solve(hess, grad)
+        th += step
+        if np.abs(step).max() < 1e-6:
+            break
+    return th
+
+
+def _prior_vector(teams: list, prior: dict | None, mean_goals: float) -> tuple[np.ndarray, float]:
+    """A priori des paramètres et son poids : saison précédente (promus : moyenne des relégués), sinon moyenne."""
+    n = len(teams)
+    if not prior:
+        return np.r_[np.log(max(mean_goals, 0.1)), _HOME_PRIOR, np.zeros(2 * n)], SHRINK
+    gone = [t for t in prior["att"] if t not in set(teams)]  # relégués (ou équipes absentes cette saison)
+    default = (np.mean([prior["att"][t] for t in gone]), np.mean([prior["def"][t] for t in gone])) if gone else (0, 0)
+    att = [prior["att"].get(t, default[0]) for t in teams]
+    dfn = [prior["def"].get(t, default[1]) for t in teams]
+    return np.r_[prior["level"], prior["home"], att, dfn], PRIOR_WEIGHT
+
+
+def _weights(dates: pd.Series, at) -> np.ndarray:
+    age = (pd.Timestamp(at) - dates).dt.days.to_numpy(dtype=float)
+    return 0.5 ** (np.clip(age, 0, None) / HALF_LIFE)
+
+
+def _index(m: pd.DataFrame) -> tuple[list, np.ndarray, np.ndarray]:
+    teams = sorted(set(m["home"]) | set(m["away"]))
+    idx = {t: i for i, t in enumerate(teams)}
+    return teams, m["home"].map(idx).to_numpy(), m["away"].map(idx).to_numpy()
+
+
+def _lambdas(th: np.ndarray, n: int, hi, ai) -> tuple[np.ndarray, np.ndarray]:
+    return (np.exp(th[0] + th[1] + th[2 + hi] + th[2 + n + ai]),
+            np.exp(th[0] + th[2 + ai] + th[2 + n + hi]))
+
+
+def team_strengths(tm: pd.DataFrame, prior: dict | None = None, at=None) -> tuple[pd.DataFrame, dict]:
+    """Forces offensive / défensive (1 = moyenne de la ligue) : maximum de vraisemblance de Poisson pondéré
+    (demi-vie HALF_LIFE jours) sur un mélange xG / buts, ramené vers l'a priori (saison précédente si fournie,
+    sinon la moyenne) d'autant plus que peu de matchs ont été joués. `at` : date de référence des poids."""
+    m, basis = _model_matches(tm)
+    teams, hi, ai = _index(m)
+    n = len(teams)
+    vec, weight = _prior_vector(teams, prior, float(np.r_[m["yh"], m["ya"]].mean()) if len(m) else 1.35)
+    th = _fit(hi, ai, m["yh"].to_numpy(), m["ya"].to_numpy(), _weights(m["date"], m["date"].max() if at is None
+                                                                          else at), vec, weight)
+    played = np.bincount(np.r_[hi, ai], minlength=n)
+    strengths = pd.DataFrame({"att": np.exp(th[2:2 + n]), "def": np.exp(th[2 + n:]), "n": played}, index=teams)
+    league = {"home": float(np.exp(th[0] + th[1])), "away": float(np.exp(th[0])), "basis": basis,
+              "prior": bool(prior), "level": float(th[0]), "home_adv": float(th[1])}
+    return strengths, league
+
+
+def season_prior(prev_tm: pd.DataFrame | None) -> dict | None:
+    """A priori tiré de la saison précédente complète (forces de fin de saison, niveau, avantage du terrain) ;
+    None si elle est inconnue."""
+    if prev_tm is None or prev_tm.empty:
         return None
-    strengths, league = team_strengths(tm)
-    if home not in strengths.index or away not in strengths.index or pd.isna(league["home"]):
+    strengths, league = team_strengths(prev_tm)
+    return {"att": np.log(strengths["att"]).to_dict(), "def": np.log(strengths["def"]).to_dict(),
+            "level": league["level"], "home": league["home_adv"]}
+
+
+def predict_match(tm: pd.DataFrame, home: str, away: str, prior: dict | None = None) -> dict | None:
+    """Pronostic : buts attendus, probabilités 1N2 et scores les plus probables (Poisson + Dixon-Coles)."""
+    if tm is None or tm.empty:
+        return None
+    strengths, league = team_strengths(tm, prior)
+    if home not in strengths.index or away not in strengths.index:
         return None
     lam_h = strengths.at[home, "att"] * strengths.at[away, "def"] * league["home"]
     lam_a = strengths.at[away, "att"] * strengths.at[home, "def"] * league["away"]
-    m = score_matrix(lam_h, lam_a)
-    win, draw, loss = outcome_probabilities(lam_h, lam_a)
+    m = score_matrix(lam_h, lam_a, DC_RHO)
     flat = [(m[i, j], i, j) for i in range(6) for j in range(6)]
     top = sorted(flat, reverse=True)[:5]
-    return {"lam_home": float(lam_h), "lam_away": float(lam_a), "matrix": m, "home_win": win, "draw": draw,
-            "away_win": loss, "top_scores": [(f"{i}-{j}", float(p)) for p, i, j in top], "basis": league["basis"]}
+    return {"lam_home": float(lam_h), "lam_away": float(lam_a), "matrix": m, "home_win": float(np.tril(m, -1).sum()),
+            "draw": float(np.trace(m)), "away_win": float(np.triu(m, 1).sum()),
+            "top_scores": [(f"{i}-{j}", float(p)) for p, i, j in top], "basis": league["basis"],
+            "prior": league["prior"]}
 
 
 OUTCOMES = ("1", "N", "2")
 
 
-def backtest(tm: pd.DataFrame, min_matches: int = 3) -> pd.DataFrame:
+def _legacy_lambdas(fh, fa, hi, ai, n: int, home, away, shrink: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
+    """Ancien modèle (v2.4), gardé pour comparaison : moyennes de xG (ou de buts) de la saison ramenées vers la
+    moyenne, moyennes domicile / extérieur de la ligue, Poisson indépendant. fh / fa : valeurs des matchs passés."""
+    ok = ~(np.isnan(fh) | np.isnan(fa))
+    fh, fa, hi, ai = fh[ok], fa[ok], hi[ok], ai[ok]
+    count = np.bincount(hi, minlength=n) + np.bincount(ai, minlength=n)
+    scored = np.bincount(hi, fh, minlength=n) + np.bincount(ai, fa, minlength=n)
+    conceded = np.bincount(hi, fa, minlength=n) + np.bincount(ai, fh, minlength=n)
+    mean = np.r_[fh, fa].mean()
+    att = (scored / mean + shrink) / (count + shrink)
+    dfn = (conceded / mean + shrink) / (count + shrink)
+    return att[home] * dfn[away] * fh.mean(), att[away] * dfn[home] * fa.mean()
+
+
+def backtest(tm: pd.DataFrame, min_matches: int = 3, prior: dict | None = None) -> pd.DataFrame:
     """Rejoue le modèle de pronostic sur les matchs déjà joués, sans connaître l'avenir.
 
-    Pour chaque journée (date), le modèle est calibré uniquement sur les matchs antérieurs, puis
-    comparé au résultat réel. Un match n'est évalué que si les deux équipes ont joué au moins
-    `min_matches` matchs avant. Renvoie une ligne par match avec probabilités, résultat et scores.
+    Pour chaque journée (date), le modèle est calibré uniquement sur les matchs antérieurs (+ l'a priori de la
+    saison précédente), puis comparé au résultat réel ; l'ancien modèle et une référence naïve (fréquences 1 / N / 2
+    observées jusque-là) sont rejoués de la même façon. Un match n'est évalué que si les deux équipes ont joué au
+    moins `min_matches` matchs avant. Une ligne par match : probabilités, résultat, Brier et log-loss.
     """
-    if tm.empty:
+    if tm is None or tm.empty:
         return pd.DataFrame()
-    home_rows = tm[tm["venue"] == "Dom."].sort_values("date")
-    rows = []
-    for day, games in home_rows.groupby(home_rows["date"].dt.normalize()):
-        past = tm[tm["date"] < day]
-        if past.empty:
+    m, _ = _model_matches(tm)
+    teams, hi, ai = _index(m)
+    n = len(teams)
+    yh, ya = m["yh"].to_numpy(), m["ya"].to_numpy()
+    actual = np.select([m["gf"] > m["ga"], m["gf"] == m["ga"]], [0, 1], 2)
+    days = m["date"].to_numpy()
+    # ancien modèle : xG si presque tous connus, sinon buts
+    fh, fa = (m["xg"], m["xga"]) if tm["xg"].notna().mean() > 0.8 else (m["gf"], m["ga"])
+    fh, fa = fh.to_numpy(dtype=float), fa.to_numpy(dtype=float)
+    rows, theta = [], None
+    for day in np.unique(days):
+        past = days < day
+        if not past.any():
             continue
-        played = past.groupby("team").size()
-        # référence naïve : fréquences 1 / N / 2 observées jusque-là
-        past_home = past[past["venue"] == "Dom."]
-        base = np.array([(past_home["result"] == r).mean() for r in ("V", "N", "D")])
-        for g in games.itertuples():
-            if played.get(g.team, 0) < min_matches or played.get(g.opponent, 0) < min_matches:
-                continue
-            p = predict_match(past, g.team, g.opponent)
-            if p is None:
-                continue
-            probs = np.array([p["home_win"], p["draw"], p["away_win"]])
-            probs = probs / probs.sum()
-            actual = {"V": 0, "N": 1, "D": 2}[g.result]
-            onehot = np.eye(3)[actual]
+        played = np.bincount(np.r_[hi[past], ai[past]], minlength=n)
+        today = np.flatnonzero((days == day) & (played[hi] >= min_matches) & (played[ai] >= min_matches))
+        if not len(today):
+            continue
+        vec, weight = _prior_vector(teams, prior, float(np.r_[yh[past], ya[past]].mean()))
+        theta = _fit(hi[past], ai[past], yh[past], ya[past], _weights(m["date"][past], day), vec, weight,
+                     vec if theta is None else theta)
+        probs = _outcomes(*_lambdas(theta, n, hi[today], ai[today]), DC_RHO)
+        old = _outcomes(*_legacy_lambdas(fh[past], fa[past], hi[past], ai[past], n, hi[today], ai[today]), 0.0)
+        base = np.bincount(actual[past], minlength=3) / past.sum()
+        for p, o, j in zip(probs, old, today, strict=True):
+            y = actual[j]
+            onehot = np.eye(3)[y]
             rows.append({
-                "date": g.date, "Domicile": g.team, "Extérieur": g.opponent, "Score": f"{g.gf}-{g.ga}",
-                "1 %": probs[0] * 100, "N %": probs[1] * 100, "2 %": probs[2] * 100,
-                "Pronostic": OUTCOMES[int(probs.argmax())], "Résultat": OUTCOMES[actual],
-                "Correct": bool(probs.argmax() == actual),
-                "brier": float(((probs - onehot) ** 2).sum()),
-                "brier_base": float(((base - onehot) ** 2).sum()) if not np.isnan(base).any() else np.nan,
-                "p_actual": float(probs[actual]),
+                "date": m.at[j, "date"], "Domicile": m.at[j, "home"], "Extérieur": m.at[j, "away"],
+                "Score": f"{m.at[j, 'gf']:.0f}-{m.at[j, 'ga']:.0f}",
+                "1 %": p[0] * 100, "N %": p[1] * 100, "2 %": p[2] * 100,
+                "Pronostic": OUTCOMES[int(p.argmax())], "Résultat": OUTCOMES[y], "Correct": bool(p.argmax() == y),
+                "Ancien 1 %": o[0] * 100, "Ancien N %": o[1] * 100, "Ancien 2 %": o[2] * 100,
+                "Correct ancien": bool(o.argmax() == y),
+                "brier": float(((p - onehot) ** 2).sum()), "brier_old": float(((o - onehot) ** 2).sum()),
+                "brier_base": float(((base - onehot) ** 2).sum()),
+                "logloss": float(-np.log(max(p[y], 1e-12))), "logloss_old": float(-np.log(max(o[y], 1e-12))),
+                "logloss_base": float(-np.log(max(base[y], 1e-12))),
+                "p_actual": float(p[y]),
             })
     return pd.DataFrame(rows)
 
 
-def backtest_summary(bt: pd.DataFrame) -> dict:
-    """Taux de bons pronostics, score de Brier (vs référence naïve) et points de calibration."""
-    if bt.empty:
-        return {}
+def _calibration(bt: pd.DataFrame, columns) -> pd.DataFrame:
     # (probabilité annoncée, l'issue s'est-elle produite ?) pour chacune des 3 issues de chaque match
     pairs = pd.concat([
-        pd.DataFrame({"p": bt[f"{outcome} %"] / 100, "hit": bt["Résultat"] == outcome})
-        for outcome in OUTCOMES
+        pd.DataFrame({"p": bt[col] / 100, "hit": bt["Résultat"] == outcome})
+        for outcome, col in zip(OUTCOMES, columns, strict=True)
     ], ignore_index=True)
     pairs["bin"] = pd.cut(pairs["p"], bins=[0, 0.2, 0.4, 0.6, 0.8, 1.0], include_lowest=True)
-    calib = pairs.groupby("bin", observed=True).agg(predicted=("p", "mean"), observed=("hit", "mean"),
-                                                    n=("hit", "size")).reset_index(drop=True)
+    return pairs.groupby("bin", observed=True).agg(predicted=("p", "mean"), observed=("hit", "mean"),
+                                                   n=("hit", "size")).reset_index(drop=True)
+
+
+def backtest_summary(bt: pd.DataFrame, n_boot: int = 1000, seed: int = 0) -> dict:
+    """Taux de bons pronostics, score de Brier et log-loss du modèle, de l'ancien modèle et de la référence naïve ;
+    écart de Brier nouveau - ancien avec son intervalle de confiance à 95 % (bootstrap) ; calibration des deux."""
+    if bt is None or bt.empty:
+        return {}
+    diff = (bt["brier"] - bt["brier_old"]).to_numpy()
+    boot = np.random.default_rng(seed).choice(diff, (n_boot, len(diff))).mean(axis=1)
     return {
-        "n": len(bt), "accuracy": float(bt["Correct"].mean()),
-        "brier": float(bt["brier"].mean()), "brier_base": float(bt["brier_base"].mean()),
-        "calibration": calib,
+        "n": len(bt), "accuracy": float(bt["Correct"].mean()), "accuracy_old": float(bt["Correct ancien"].mean()),
+        "brier": float(bt["brier"].mean()), "brier_old": float(bt["brier_old"].mean()),
+        "brier_base": float(bt["brier_base"].mean()),
+        "logloss": float(bt["logloss"].mean()), "logloss_old": float(bt["logloss_old"].mean()),
+        "logloss_base": float(bt["logloss_base"].mean()),
+        "brier_diff": float(diff.mean()), "brier_diff_ci": tuple(float(v) for v in np.percentile(boot, [2.5, 97.5])),
+        "calibration": _calibration(bt, ("1 %", "N %", "2 %")),
+        "calibration_old": _calibration(bt, ("Ancien 1 %", "Ancien N %", "Ancien 2 %")),
     }
 
 
