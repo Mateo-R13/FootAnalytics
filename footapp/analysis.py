@@ -2,7 +2,14 @@
 import numpy as np
 import pandas as pd
 
-from .config import ALL_PLAYER_METRICS, LOWER_IS_BETTER, SHOT_BODY_PARTS, SHOT_SITUATIONS
+from .config import (
+    ALL_PLAYER_METRICS,
+    EVOLUTION_FLOOR,
+    EVOLUTION_MIN_MINUTES,
+    LOWER_IS_BETTER,
+    SHOT_BODY_PARTS,
+    SHOT_SITUATIONS,
+)
 
 
 def per90(df: pd.DataFrame) -> pd.DataFrame:
@@ -87,6 +94,44 @@ def scout(pool90: pd.DataFrame, criteria: list[tuple[str, float]]) -> pd.DataFra
         out[f"{key}__pct"] = pct.loc[ok, key]
     out["score"] = pct.loc[ok, keys].mean(axis=1)
     return out.sort_values("score", ascending=False)
+
+
+# ---------------------------------------------------------------------------
+# Évolution d'un joueur d'une saison à l'autre (sortie de FootData.player_season_rows)
+# ---------------------------------------------------------------------------
+EVOLUTION_COLUMNS = ["Saison", "Compétition", "Équipe", "kind", "_start", "appearances", "minutesPlayed", "value",
+                     "reliable", "in_progress"]
+
+
+def season_evolution(rows: pd.DataFrame, metric: str, kinds=("league",), min_minutes: int = EVOLUTION_MIN_MINUTES,
+                     floor: int = EVOLUTION_FLOOR) -> pd.DataFrame:
+    """Une ligne par (type de compétition, saison) : `value` = métrique par 90 min si cumulable, telle quelle sinon.
+
+    Saisons sous `floor` minutes ignorées ; transfert en cours de saison : on garde la ligne où le joueur a le plus
+    joué. reliable = au moins `min_minutes` minutes ; in_progress = saison en cours (dernière saison du joueur dans
+    la compétition, de l'année de son championnat le plus récent)."""
+    if rows is None or rows.empty or metric not in rows:
+        return pd.DataFrame(columns=EVOLUTION_COLUMNS)
+    d = rows[rows["kind"].isin(kinds) & (rows["minutesPlayed"].fillna(0) >= floor)]
+    d = d.sort_values("minutesPlayed", ascending=False).drop_duplicates(["kind", "_start"])
+    newest = rows.loc[rows["kind"] == "league", "_start"].max()
+    if pd.isna(newest):
+        newest = rows["_start"].max()
+    out = d[[c for c in EVOLUTION_COLUMNS if c in d]].copy()
+    out["value"] = per90(d)[metric].astype(float)
+    out["reliable"] = d["minutesPlayed"] >= min_minutes
+    out["in_progress"] = d["latest"].astype(bool) & (d["_start"] >= newest)
+    return out[EVOLUTION_COLUMNS].sort_values(["kind", "_start"]).reset_index(drop=True)
+
+
+def weighted_mean(evo: pd.DataFrame, kind: str = "league") -> float:
+    """Moyenne des saisons fiables du championnat pondérée par les minutes (= Σ cumul / Σ minutes × 90 pour une
+    métrique cumulable) ; NaN sans saison fiable renseignée."""
+    if evo is None or evo.empty:
+        return np.nan
+    d = evo[(evo["kind"] == kind) & evo["reliable"].astype(bool) & evo["value"].notna()]
+    minutes = d["minutesPlayed"].astype(float)
+    return float((d["value"] * minutes).sum() / minutes.sum()) if minutes.sum() > 0 else np.nan
 
 
 # ---------------------------------------------------------------------------

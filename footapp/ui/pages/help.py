@@ -52,7 +52,18 @@ GLOSSARY = [
      "types robustes. Le R² affiché indique la part du score expliquée par la valeur (souvent faible en début de "
      "saison) : un z élevé est une piste à vérifier, pas un verdict."),
     ("PPDA", "Passes adverses par action défensive (tacles, interceptions, fautes). Bas = pressing intense. "
-     "Officiel (Understat) pour les 5 grands championnats, approximé ailleurs."),
+     "Officiel (Understat) pour les 5 grands championnats, approximé ailleurs (passes adverses dans leur moitié : "
+     "valeurs plus basses, à ne comparer qu'entre elles)."),
+    ("Évolution & carrière", "Fiche joueur : une métrique par 90 min saison après saison, en championnat (et en "
+     "coupes d'Europe si coché). Saisons de moins de 180 min ignorées ; sous le seuil « Fiable dès » (900 min par "
+     "défaut), points creux et pointillés. Transfert en cours de saison : la ligne la plus fournie est gardée. "
+     "Moyenne pondérée = saisons fiables du championnat pondérées par les minutes. « n.d. » : donnée absente cette "
+     "saison-là (Sofascore n'a pas toujours tout mesuré). Les xG d'une saison à l'autre intègrent aussi les "
+     "évolutions du modèle."),
+    ("Historique (5 saisons)", "Équipes : saison en cours et 5 précédentes du championnat. Points, rang et buts : "
+     "classement officiel Sofascore (pénalités de points incluses) ; xG, xPts et PPDA : Understat pour les 5 grands "
+     "championnats, sinon statistiques de saison Sofascore (xG quand ils existent, grosses occasions, PPDA "
+     "approché). Pas d'historique pour les coupes d'Europe (format changé en 24/25)."),
     ("Pronostics", "Modèle de Poisson : forces d'attaque et de défense calculées sur les xG de la saison, avantage du "
      "terrain. Indicatif : ne connaît ni les absences ni la forme du moment."),
     ("Score de Brier", "Erreur moyenne des probabilités annoncées (0 = parfait, plus bas = mieux), comparée à une "

@@ -15,12 +15,12 @@ Python + PySide6, avec installeur Windows (thème sombre ou clair).
 | **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
 | **Pronostics** | Probabilités 1 / N / 2 des prochains matchs (modèle de Poisson sur les xG), matrice des scores, simulation de n'importe quelle affiche, **fiabilité du modèle** (rejoué sur les matchs passés : taux de réussite, score de Brier, calibration) |
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
-| **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **tirs & heatmap de la saison** (carte des tirs avec xG, xG par tir et % cadrés vs moyenne du poste, répartition par situation / surface de contact / zone), **profils similaires** (joueurs statistiquement les plus proches), **carrière** saison par saison, toutes les stats avec rang au poste, **liste de suivi**, **export PDF** |
+| **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **tirs & heatmap de la saison** (carte des tirs avec xG, xG par tir et % cadrés vs moyenne du poste, répartition par situation / surface de contact / zone), **profils similaires** (joueurs statistiquement les plus proches), **évolution & carrière** (n'importe quelle métrique par 90 min saison après saison : championnat et coupes d'Europe, saisons à faible temps de jeu signalées, moyenne pondérée), toutes les stats avec rang au poste, **liste de suivi**, **export PDF** |
 | **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre, référentiel compétition ou **5 grands championnats** |
 | **Recherche avancée** | Joueurs remplissant plusieurs critères (centiles par poste), filtres **âge / valeur estimée / fin de contrat**, compétition ou 5 grands championnats, recherches enregistrables |
 | **Valeur vs performance** | Nuage valeur estimée Sofascore (échelle log) vs score (note, profil du poste, indice ou métrique), performance attendue par régression robuste (poste, âge, championnat), joueurs **sous-évalués / surévalués** (pistes à vérifier), R² affiché, filtres âge / valeur / contrat, export — saison en cours |
 | **Indices personnalisés** | Scores composés de métriques pondérées (Créateur, Finisseur, Récupérateur… ou les vôtres), classement et export |
-| **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA, **comparaison de deux équipes** (radar), **forme** (xG glissants), **bilan domicile / extérieur** |
+| **Équipes** | ~75 métriques d'équipe dont ce qui est concédé à l'adversaire, PPDA, **comparaison de deux équipes** (radar), **forme** (xG glissants), **bilan domicile / extérieur**, **historique sur 5 saisons** (points et xPts par match, rang officiel avec pénalités, buts / xG pour et contre, PPDA, face à la moyenne de la ligue) |
 | **Aide & paramètres** | Glossaire, thème sombre / clair, vérification des mises à jour, gestion du cache |
 
 Graphiques interactifs : survol = détail, barre d'outils = zoom et export PNG.
@@ -77,6 +77,7 @@ L'icône se régénère avec `python tools\make_icon.py`.
 .\.venv\Scripts\python.exe -m pytest -q                 # tests hors ligne, interface comprise
 $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # contre la vraie API
 .\.venv\Scripts\python.exe -m tests.record_fixtures      # ré-enregistrer les réponses de référence
+.\.venv\Scripts\python.exe -m tests.record_fixtures --history   # n'ajouter que l'historique d'une équipe
 ```
 
 - **Dépendances** : `requirements.txt` liste les dépendances directes ; `requirements.lock` fige toutes les

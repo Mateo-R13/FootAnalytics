@@ -193,3 +193,51 @@ def test_recherche_filtre_age_charge_les_valeurs(qapp, window):
     result = page.table.model_.dataframe()
     assert "Âge" in result and (result["Âge"] <= 23).all()
     assert not crashes and not errors, (crashes, errors)
+
+
+def test_onglet_evolution_et_carriere(qapp, window, meta):
+    w, errors, crashes = window
+    w.state.open_player.emit(meta["player_id"])
+    wait_idle(qapp, w)
+    profile = w.page("profile")
+    assert not [p for p in w.state.data.client.requested if "/statistics/seasons" in p]  # rien avant l'onglet
+    profile.tabs.setCurrentWidget(profile.career_tab)
+    wait_idle(qapp, w)
+    assert profile.evo_metric.currentData() == "savePct"  # gardien : métrique par défaut du poste
+    assert profile.career_chart.figure.axes
+    assert not profile.career_table.model_.dataframe().empty
+    asked = len(w.state.data.client.requested)
+    # changer de métrique, de seuil ou ajouter les coupes d'Europe ne fait que redessiner
+    for key in ("keyPasses", "accuratePassesPercentage", "npxg"):
+        profile.evo_metric.setCurrentIndex(profile.evo_metric.findData(key))
+    profile.evo_europe.setChecked(True)
+    profile.evo_reliable.setValue(0)
+    wait_idle(qapp, w)
+    assert len(w.state.data.client.requested) == asked
+    assert "npxG (xG hors penalty) /90" in profile.career_table.model_.dataframe()
+    # joueur sans carrière enregistrée (ressources absentes) : message, aucune erreur
+    w.state.open_player.emit(meta["shooter_id"])
+    wait_idle(qapp, w)
+    assert profile.career_chart.figure.texts and profile.career_table.model_.dataframe().empty
+    assert not crashes and not errors, (crashes, errors)
+
+
+def test_onglet_historique_equipe(qapp, window, meta):
+    w, errors, crashes = window
+    w.show_page("teams")
+    wait_idle(qapp, w)
+    page = w.page("teams")
+    seasons = w.state.data.seasons(meta["ut"])
+    past = [f"/unique-tournament/{meta['ut']}/season/{s['id']}/standings/total" for s in seasons[1:6]]
+    assert not set(past) & set(w.state.data.client.requested)  # chargé seulement à l'ouverture de l'onglet
+    page.history_team.setCurrentIndex(page.history_team.findData(meta["history_team_id"]))
+    page.chart_tabs.setCurrentWidget(page.history_tab)
+    wait_idle(qapp, w)
+    assert set(past) <= set(w.state.data.client.requested)
+    assert len(page.history_chart.figure.axes) >= 4
+    table = page.history_table.model_.dataframe()
+    assert len(table) == 6 and {"Rang", "Pts/match", "xG/match", "PPDA"} <= set(table.columns)
+    # autre équipe (données partielles ou absentes : aucune erreur)
+    page.history_team.setCurrentIndex((page.history_team.currentIndex() + 1) % page.history_team.count())
+    wait_idle(qapp, w)
+    assert not crashes and not errors, (crashes, errors)

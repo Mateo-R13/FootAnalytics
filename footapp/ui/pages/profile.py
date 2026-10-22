@@ -1,6 +1,7 @@
 import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -20,14 +21,28 @@ from ...analysis import (
     percentiles,
     pooled_shot_quality,
     rank_in,
+    season_evolution,
     shot_breakdown,
     shot_summary,
     similar_players,
+    weighted_mean,
 )
-from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
+from ...config import (
+    ALL_PLAYER_METRICS,
+    DEFAULT_EVOLUTION,
+    EVOLUTION_FLOOR,
+    EVOLUTION_MIN_MINUTES,
+    POSITION_TEMPLATES,
+    POSITIONS,
+)
+from ...data import FootData
 from .. import charts, report
 from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, rounded_pixmap, table_card, tool_button
 from . import Page, scope_combo
+from .players import metric_combo
+
+# métriques proposées dans l'onglet Évolution (ni volume de jeu, ni physique : suivi partiel avant 25/26)
+EVOLUTION_METRICS = {k: v for k, v in ALL_PLAYER_METRICS.items() if v[2] != "info" and v[1] != "Physique"}
 
 
 def player_combo() -> QComboBox:
@@ -68,7 +83,7 @@ class ProfilePage(Page):
     key = "profile"
     title = "Fiche joueur"
     subtitle = ("Identité, profil en centiles par rapport aux joueurs du même poste, forme match par match, "
-                "tirs et heatmap de la saison, stats complètes")
+                "tirs et heatmap de la saison, évolution d'une saison à l'autre, stats complètes")
     icon_name = "fa5s.id-card"
 
     def __init__(self, state):
@@ -163,14 +178,30 @@ class ProfilePage(Page):
         similar.setSizes([560, 520])
         self._similar_ctx = None  # (pool par 90, centiles, métriques) du dernier calcul
 
-        # carrière : chargée à l'ouverture de l'onglet (une requête par saison)
+        # évolution & carrière : chargée à l'ouverture de l'onglet (une requête par compétition-saison) ;
+        # changer de métrique ou de seuil ne fait que redessiner
         self.career_chart = ChartWidget()
         self.career_table = DataTable()
+        self.evo_metric = metric_combo(EVOLUTION_METRICS, DEFAULT_EVOLUTION["M"])
+        self.evo_europe = QCheckBox("Coupes d'Europe")
+        self.evo_europe.setToolTip("Ajoute la ligue des champions, la ligue Europa et la ligue Conférence")
+        self.evo_reliable = QSpinBox(minimum=0, maximum=3000, singleStep=90, value=EVOLUTION_MIN_MINUTES,
+                                     suffix=" min")
+        self.evo_reliable.setToolTip("En dessous : saison en pointillés (échantillon réduit), hors moyenne pondérée")
+        evo_card = chart_card(self.career_chart)
+        eb = QHBoxLayout()
+        for w in (QLabel("Métrique"), self.evo_metric, self.evo_europe, QLabel("Fiable dès"), self.evo_reliable):
+            eb.addWidget(w)
+        eb.addStretch()
+        evo_card.body.insertLayout(0, eb)
+        self.career_table_card = table_card(self.career_table, "Saison par saison", "toutes compétitions")
         career = QSplitter(Qt.Vertical)
-        career.addWidget(chart_card(self.career_chart))
-        career.addWidget(table_card(self.career_table, "Saison par saison", "toutes compétitions"))
-        career.setSizes([340, 300])
+        career.addWidget(evo_card)
+        career.addWidget(self.career_table_card)
+        career.setSizes([380, 260])
         self._career_for = None
+        self._season_rows = None  # (joueur, nom, lignes compétition-saison) affichés
+        self._evo_pos = None      # poste du joueur dont la métrique par défaut a été choisie
 
         # tirs & heatmap de la saison : chargés à l'ouverture de l'onglet (2 requêtes par joueur-saison)
         self.shot_kpis = {k: KpiTile(label, color) for k, label, color in [
@@ -208,7 +239,7 @@ class ProfilePage(Page):
         self.tabs.addTab(form, "Forme match par match")
         self.tabs.addTab(self.shots_tab, "Tirs && heatmap")  # && : « & » littéral (pas de raccourci)
         self.tabs.addTab(similar, "Profils similaires")
-        self.tabs.addTab(career, "Carrière")
+        self.tabs.addTab(career, "Évolution && carrière")
         self.tabs.addTab(table_card(self.all_table, "Toutes les statistiques",
                                     "total, par 90 min, centile et rang au poste"), "Toutes les stats")
         self.career_tab = career
@@ -229,6 +260,9 @@ class ProfilePage(Page):
         self.bind("big5", lambda df: self._fill_similar() if self.similar_scope.currentData() == "big5" else None)
         self.picker.currentIndexChanged.connect(self._on_pick)
         self.min_minutes.valueChanged.connect(self.refresh)
+        self.evo_metric.currentIndexChanged.connect(self._draw_evolution)
+        self.evo_europe.toggled.connect(self._draw_evolution)
+        self.evo_reliable.valueChanged.connect(self._draw_evolution)
         self.bind("context", lambda ctx: self.pct_chart.message("Chargement…"))
         self.bind("players", self._on_players)
         state.images.loaded.connect(self._refresh_images)
@@ -404,16 +438,53 @@ class ProfilePage(Page):
         p = self._row()
         if p is None or self.tabs.currentWidget() is not self.career_tab or self._career_for == int(p.player_id):
             return
-        pid, name = int(p.player_id), p.player
+        pid, name, pos = int(p.player_id), p.player, p.pos
         self._career_for = pid
+        if self._evo_pos != pos:  # métrique par défaut du poste (gardée tant que le poste ne change pas)
+            self._evo_pos = pos
+            self.evo_metric.blockSignals(True)
+            self.evo_metric.setCurrentIndex(self.evo_metric.findData(DEFAULT_EVOLUTION[pos]))
+            self.evo_metric.blockSignals(False)
+        self._season_rows = None
         self.career_chart.message("Chargement de la carrière…")
         self.career_table.set_dataframe(pd.DataFrame())
-        self.state.runner.run("profile_career", lambda progress: self.state.data.player_career(pid, progress=progress),
-                              lambda df: self._on_career(df, name))
+        self.state.runner.run("profile_career",
+                              lambda progress: self.state.data.player_season_rows(pid, pos, progress=progress),
+                              lambda rows: self._on_career(pid, name, rows))
 
-    def _on_career(self, df, name):
-        self.career_table.set_dataframe(df, hidden=("_start",))
-        charts.career(self.career_chart, df, f"Évolution de {name}")
+    def _on_career(self, pid, name, rows):
+        current = self._row()
+        if current is None or int(current.player_id) != pid:
+            return  # joueur changé entre-temps
+        self._season_rows = (pid, name, rows)
+        self._draw_evolution()
+
+    def _draw_evolution(self, *_):
+        if self._season_rows is None:
+            return
+        _, name, rows = self._season_rows
+        metric = self.evo_metric.currentData()
+        if metric is None:
+            return
+        label, _, kind = ALL_PLAYER_METRICS[metric]
+        unit = " /90" if kind == "count" else ""
+        kinds = ("league", "europe") if self.evo_europe.isChecked() else ("league",)
+        threshold = self.evo_reliable.value()
+        evo = season_evolution(rows, metric, kinds, min_minutes=threshold)
+        mean = weighted_mean(evo)
+        notes = [f"saisons ≥ {EVOLUTION_FLOOR} min", f"pointillés et points creux : moins de {threshold} min"]
+        if "europe" in kinds and not (evo["kind"] == "europe").any():
+            notes.append(f"aucune coupe d'Europe ≥ {EVOLUTION_FLOOR} min")
+        if metric in ("expectedGoals", "npxg", "expectedAssists", "expectedGoalInvolvements", "xgPerShot"):
+            notes.append("le modèle xG lui-même évolue d'une saison à l'autre")
+        charts.season_evolution(self.career_chart, evo, f"{label}{unit}", f"Évolution de {name} : {label}{unit}",
+                                " · ".join(notes), mean)
+        table = FootData.career_table(rows)
+        column = f"{label}{unit}"
+        if column not in table:  # buts, xG, % passes… : déjà dans le tableau
+            values = per90(rows)[metric] if kind == "count" else rows[metric]
+            table.insert(table.columns.get_loc("Note moy."), column, values.reindex(table.index).round(2))
+        self.career_table.set_dataframe(table.reset_index(drop=True), hidden=("_start",))
 
     # --- tirs & heatmap de la saison ---------------------------------------------
     def _shots_key(self, p) -> tuple:

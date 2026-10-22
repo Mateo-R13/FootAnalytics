@@ -65,7 +65,10 @@ class ReplayUnderstat:
         return UnderstatClient.supports(ut)
 
     def league_data(self, ut, season_start, ttl=0):
-        return self.responses[f"{ut}/{season_start}"]
+        key = f"{ut}/{season_start}"
+        if key not in self.responses:  # saison non enregistrée : comme une source indisponible
+            raise ApiError(f"Understat non enregistré : {key}")
+        return self.responses[key]
 
 
 class FailingClient(ReplayClient):

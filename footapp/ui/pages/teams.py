@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QSplitter, QTabWidget
 
 from ...analysis import percentiles, team_form, venue_split
-from ...config import ALL_TEAM_METRICS, TEAM_CATEGORIES, TEAM_LOWER_IS_BETTER, TEAM_RADAR
+from ...config import ALL_TEAM_METRICS, CONTINENTAL_CUPS, TEAM_CATEGORIES, TEAM_LOWER_IS_BETTER, TEAM_RADAR
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card, tool_button
 from . import Page
@@ -15,13 +15,15 @@ class TeamsPage(Page):
     key = "teams"
     title = "Équipes"
     subtitle = ("Profil statistique des équipes : attaque, construction, défense, ce qu'elles concèdent, "
-                "pressing (PPDA) - total ou par match")
+                "pressing (PPDA) - total ou par match, historique sur 5 saisons")
     icon_name = "fa5s.shield-alt"
 
     def __init__(self, state):
         super().__init__(state)
         self.df = pd.DataFrame()
         self._loaded_for = None
+        self._history = {}           # (compétition, équipe) -> historique déjà calculé
+        self._history_for = None     # (compétition, équipe) demandé ou affiché
 
         export = tool_button("Exporter", "fa5s.file-export")
         export.clicked.connect(lambda: self.table.export(f"equipes_{self.ctx.label}" if self.ctx else "equipes"))
@@ -99,14 +101,37 @@ class TeamsPage(Page):
         compare.addWidget(table_card(self.compare_table, "Détail", "valeurs par match et centiles"))
         compare.setSizes([680, 460])
 
+        # historique sur 5 saisons d'une équipe : chargé à l'ouverture de l'onglet
+        self.history_team = QComboBox()
+        self.history_team.setMinimumWidth(220)
+        self.history_chart = ChartWidget()
+        history_chart_card = chart_card(self.history_chart)
+        hb = QHBoxLayout()
+        hb.addWidget(QLabel("Équipe"))
+        hb.addWidget(self.history_team)
+        hb.addStretch()
+        history_export = tool_button("Exporter", "fa5s.file-export", "Exporter le tableau saison par saison")
+        history_export.clicked.connect(lambda: self.history_table.export(
+            f"historique_{self.history_team.currentText()}"))
+        hb.addWidget(history_export)
+        history_chart_card.body.insertLayout(0, hb)
+        self.history_table = DataTable()
+        self.history_tab = QSplitter(Qt.Horizontal)
+        self.history_tab.addWidget(history_chart_card)
+        self.history_tab.addWidget(table_card(self.history_table, "Saison par saison",
+                                              "classement officiel (pénalités incluses) · valeurs par match"))
+        self.history_tab.setSizes([760, 420])
+
         tabs = QTabWidget()
         tabs.addTab(bar_card, "Classement par métrique")
         tabs.addTab(sc_card, "Nuage X / Y")
         tabs.addTab(compare, "Comparer deux équipes")
         tabs.addTab(form_card, "Forme d'une équipe")
         tabs.addTab(venue_card, "Domicile / extérieur")
+        tabs.addTab(self.history_tab, "Historique (5 saisons)")
         self.chart_tabs, self._match_tabs = tabs, (form_card, venue_card)
         tabs.currentChanged.connect(self._maybe_load_matches)
+        tabs.currentChanged.connect(self._maybe_load_history)
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(table_card(self.table))
         splitter.addWidget(tabs)
@@ -121,12 +146,21 @@ class TeamsPage(Page):
         self.team_b.currentIndexChanged.connect(self._compare)
         self.form_team.currentIndexChanged.connect(self._show_form)
         self.form_window.valueChanged.connect(self._show_form)
+        self.history_team.currentIndexChanged.connect(self._maybe_load_history)
         self.bind("context", self._on_context)
-        self.bind("standings", lambda df: self.load())
+        self.bind("standings", self._on_standings)
         self.bind("team_matches", self._on_team_matches)
         state.images.loaded.connect(lambda *_: self.venue_table.model_.refresh_icons())
 
+    def _on_standings(self, standings):
+        self._fill_history_teams(standings)
+        self.load()
+
     def _on_context(self, ctx):
+        self.history_team.clear()
+        self._history, self._history_for = {}, None
+        self.history_table.set_dataframe(pd.DataFrame())
+        self.history_chart.message("Chargement du classement…")
         self.df = pd.DataFrame()
         self.table.set_dataframe(self.df)
         self.bar_chart.message("Les statistiques d'équipes se chargent à l'ouverture de la page")
@@ -191,10 +225,69 @@ class TeamsPage(Page):
         self.compare_table.set_dataframe(pd.DataFrame(table))
 
     def show_team(self, name: str):
-        """Ouvre l'onglet « Forme » sur l'équipe `name` (nom Sofascore du classement)."""
+        """Ouvre l'onglet « Forme » sur l'équipe `name` (nom Sofascore du classement), présélectionnée aussi
+        dans l'historique."""
         self._wanted_team = name
+        idx = self.history_team.findText(name)
+        if idx >= 0:
+            self.history_team.setCurrentIndex(idx)
         self.chart_tabs.setCurrentWidget(self._match_tabs[0])
         self._select_wanted_team()
+
+    # --- historique sur 5 saisons -----------------------------------------------------
+    def _fill_history_teams(self, standings):
+        current = self.history_team.currentData()
+        self.history_team.blockSignals(True)
+        self.history_team.clear()
+        if not standings.empty and "team_id" in standings:
+            for r in standings.dropna(subset=["team_id"]).drop_duplicates("team_id").itertuples():
+                self.history_team.addItem(r.Équipe, int(r.team_id))
+        idx = self.history_team.findData(current) if current is not None else -1
+        self.history_team.setCurrentIndex(max(idx, 0))
+        self.history_team.blockSignals(False)
+        self._maybe_load_history()
+
+    def _maybe_load_history(self, *_):
+        ctx, tid = self.ctx, self.history_team.currentData()
+        if ctx is None or self.chart_tabs.currentWidget() is not self.history_tab or not self.isVisible():
+            return
+        if ctx.ut in CONTINENTAL_CUPS:
+            self.history_table.set_dataframe(pd.DataFrame())
+            return self.history_chart.message("Historique disponible pour les championnats uniquement :\n"
+                                              "le format des coupes d'Europe a changé en 24/25 (phase de ligue "
+                                              "unique),\nles saisons ne sont pas comparables")
+        if tid is None:
+            if not self.state.standings.empty:
+                self.history_chart.message("Historique indisponible : Sofascore ne répond pas")
+            return
+        key = (ctx.ut, tid)
+        if key == self._history_for:
+            return
+        self._history_for = key
+        if key in self._history:
+            return self._show_history(self._history[key])
+        name, data = self.history_team.currentText(), self.state.data
+        self.history_chart.message(f"Chargement de l'historique de {name}…")
+        self.history_table.set_dataframe(pd.DataFrame())
+        self.state.runner.run("team_history", lambda progress: data.team_history(ctx.ut, tid, progress=progress),
+                              lambda df: self._on_history(key, df))
+
+    def _on_history(self, key, df):
+        self._history[key] = df
+        if key == self._history_for:
+            self._show_history(df)
+
+    def _show_history(self, df):
+        name = self.history_team.currentText()
+        sources = list(df["Source"].dropna().unique())
+        basis = ("xG, xPts et PPDA : Understat" if sources == ["Understat"] else
+                 "xG Sofascore quand ils existent · PPDA approché (voir l'aide)")
+        competition = self.ctx.competition if self.ctx else ""
+        charts.team_history(self.history_chart, df, f"{name} - {competition} : saison en cours et 5 précédentes",
+                            f"Points, rang et buts : classement officiel Sofascore (pénalités incluses)\n{basis} · "
+                            "valeurs par match · survolez un point")
+        table = df[df["present"].astype(bool)].drop(columns=["present", "current", "_start"]).round(2)
+        self.history_table.set_dataframe(table.dropna(axis=1, how="all"))
 
     def _select_wanted_team(self):
         name = getattr(self, "_wanted_team", None)
@@ -220,6 +313,7 @@ class TeamsPage(Page):
         super().showEvent(event)
         self.load()
         self._maybe_load_matches()
+        self._maybe_load_history()
 
     def load(self):
         ctx, standings = self.ctx, self.state.standings

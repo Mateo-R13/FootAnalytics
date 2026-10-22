@@ -259,32 +259,142 @@ def rating_timeline(chart: ChartWidget, matches: pd.DataFrame, title: str):
     chart.draw()
 
 
-def career(chart: ChartWidget, df: pd.DataFrame, title: str):
-    """xG/90 et xA/90 saison par saison (une même unité -> un seul axe)."""
+def _season_line(ax, chart, d: pd.DataFrame, y: str, color: str, label: str, hover, weak=None, ls: str = "-",
+                 lw: float = 2.0):
+    """Une série saison par saison (x = année de début, aucun trait au-dessus d'une saison manquante).
+
+    weak : masque des saisons à part (non fiables / en cours) -> point creux et segments en pointillés."""
+    d = d.reset_index(drop=True)
+    xs = d["_start"].astype(float).to_numpy()
+    ys = pd.to_numeric(d[y], errors="coerce").to_numpy(dtype=float)
+    weak = np.zeros(len(d), dtype=bool) if weak is None else np.asarray(weak, dtype=bool)
+    for i in range(1, len(d)):
+        if xs[i] - xs[i - 1] == 1 and not np.isnan(ys[i]) and not np.isnan(ys[i - 1]):
+            ax.plot(xs[i - 1:i + 1], ys[i - 1:i + 1], color=color, lw=lw, zorder=2,
+                    ls="--" if weak[i] or weak[i - 1] else ls)
+    ok = ~np.isnan(ys)
+    for mask, filled in ((ok & ~weak, True), (ok & weak, False)):
+        if mask.any():
+            pts = ax.scatter(xs[mask], ys[mask], s=44 if lw >= 2 else 18, zorder=3, linewidth=1.8,
+                             facecolor=color if filled else theme.SURFACE, edgecolor=theme.SURFACE if filled else color)
+            chart.add_hover(ax, pts, [hover(r) for _, r in d[mask].iterrows()])
+    return Line2D([], [], color=color, lw=lw, ls=ls, marker="o", markersize=5, label=label)
+
+
+def season_evolution(chart: ChartWidget, evo: pd.DataFrame, metric_label: str, title: str, subtitle: str,
+                     mean: float = np.nan):
+    """Métrique saison par saison : championnat (et coupes d'Europe). Saisons non fiables : points creux et
+    segments en pointillés ; moyenne pondérée des saisons fiables du championnat en pointillés fins."""
     fig = chart.clear()
-    if df.empty:
-        return chart.message("Aucune statistique de carrière disponible")
-    d = df[df["Minutes"] >= 270].sort_values(["_start", "Compétition"]).reset_index(drop=True)
-    if d.empty:
-        return chart.message("Pas de saison avec au moins 270 minutes jouées")
+    if evo is None or evo.empty:
+        return chart.message("Aucune saison avec assez de temps de jeu")
     ax = fig.add_subplot()
-    x = np.arange(len(d))
     handles = []
-    for col, color, label in (("xG /90", theme.HOME, "xG / 90 min"), ("xA /90", theme.AWAY, "xA / 90 min")):
-        y = pd.to_numeric(d[col], errors="coerce")
-        ax.plot(x, y, color=color, lw=2)
-        pts = ax.scatter(x, y, s=50, color=color, edgecolor=theme.SURFACE, linewidth=2, zorder=3)
-        chart.add_hover(ax, pts, [f"{r['Saison']} · {r['Compétition']} ({r['Équipe']})\n{label} : {_num(v)}"
-                                  f"\n{r['Matchs']} matchs · {r['Minutes']} min · {r['Buts']} buts"
-                                  f" · {r['Passes déc.']} PD"
-                                  for (_, r), v in zip(d.iterrows(), y, strict=True)])
-        handles.append(Line2D([], [], color=color, lw=2, marker="o", label=label))
-    ax.set_xticks(x, [f"{r['Saison']}\n{r['Compétition'][:16]}" for _, r in d.iterrows()], fontsize=7.5)
-    ax.set_ylim(bottom=0)
+    for kind, color, name in (("league", theme.HOME, "Championnat"), ("europe", theme.AWAY, "Coupes d'Europe")):
+        d = evo[evo["kind"] == kind].sort_values("_start").reset_index(drop=True)
+        if d.empty:
+            continue
+
+        def hover(r):
+            notes = [n for n, flag in (("échantillon réduit", not r["reliable"]), ("en cours", r["in_progress"]))
+                     if flag]
+            return (f"{r['Saison']} · {_plain(r['Compétition'])} ({_plain(r['Équipe'])})\n"
+                    f"{metric_label} : {_num(r['value'])}\n"
+                    f"{_num(r['appearances'])} matchs · {_num(r['minutesPlayed'])} min"
+                    + (f"\n{', '.join(notes)}" if notes else ""))
+
+        handles.append(_season_line(ax, chart, d, "value", color, name, hover, weak=~d["reliable"].astype(bool)))
+        for start in d.loc[d["value"].isna(), "_start"]:
+            ax.annotate("n.d.", (start, 0), xycoords=("data", "axes fraction"), xytext=(0, 4),
+                        textcoords="offset points", ha="center", fontsize=7.5, color=color)
+    if pd.notna(mean):
+        ax.axhline(mean, color=theme.INK2, lw=1, ls=":", zorder=1)
+        handles.append(Line2D([], [], color=theme.INK2, lw=1, ls=":", label=f"Moyenne pondérée : {_num(mean)}"))
+    handles.append(Line2D([], [], color=theme.MUTED, lw=1.5, ls="--", marker="o", markersize=5,
+                          markerfacecolor=theme.SURFACE, label="Échantillon réduit"))
+    starts = sorted(int(v) for v in evo["_start"].unique())
+    labels = []
+    for start in starts:
+        r = evo[evo["_start"] == start].sort_values("kind", key=lambda k: k != "league").iloc[0]
+        labels.append(f"{r['Saison']}\n{_plain(r['Compétition'])[:16]}" if r["kind"] == "league" else r["Saison"])
+    ax.set_xticks(starts, labels, fontsize=7.5)
+    ax.set_xlim(starts[0] - 0.5, starts[-1] + 0.5)
+    values = evo["value"].dropna()
+    if not values.empty and values.min() >= 0:
+        ax.set_ylim(0, max(values.max() * 1.15, 0.01))
+    ax.set_ylabel(metric_label)
     ax.yaxis.grid(True)
     ax.set_axisbelow(True)
-    ax.legend(handles=handles, loc="upper left", fontsize=8.5)
-    _title(ax, title, "Saisons avec ≥ 270 min · survolez un point pour le détail")
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=len(handles), fontsize=8)
+    _title(ax, title, subtitle)
+    chart.draw()
+
+
+# (titre, [(colonne, couleur du thème, libellé)]) ; MUTED = moyenne de la ligue (pointillés fins)
+_HISTORY_PANELS = [
+    ("Points par match (rang final)", [("Pts/match", "HOME", "Points"), ("xPts/match", "AWAY", "xPts")]),
+    ("Buts marqués par match", [("BP/match", "HOME", "Buts"), ("xG/match", "AWAY", "xG"),
+                                ("ligue BP/match", "MUTED", "Moy. ligue (buts)")]),
+    ("Buts encaissés par match", [("BC/match", "HOME", "Buts"), ("xGA/match", "AWAY", "xG contre"),
+                                  ("ligue BP/match", "MUTED", "Moy. ligue (buts)")]),
+    ("PPDA (bas = pressing intense)", [("PPDA", "HOME", "PPDA"), ("ligue PPDA", "MUTED", "Moy. ligue")]),
+]
+
+
+def team_history(chart: ChartWidget, hist: pd.DataFrame, title: str, subtitle: str):
+    """4 petits graphiques saison par saison : points, buts pour, buts contre, PPDA, avec la moyenne de la ligue.
+    Saison en cours en points creux."""
+    fig = chart.clear()
+    d = pd.DataFrame() if hist is None or hist.empty else hist[hist["present"].astype(bool)]
+    if d.empty:
+        return chart.message("Équipe absente de la compétition sur ces saisons")
+    d = d.sort_values("_start").reset_index(drop=True)
+    current = d["current"].astype(bool)
+    gs = fig.add_gridspec(3, 2, height_ratios=[0.07, 1, 1])
+    key = fig.add_subplot(gs[0, :])  # bandeau de légende commune
+    key.axis("off")
+    axes = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in (1, 2)])
+    ticks = d["_start"].astype(int).tolist()
+    kinds = set()  # couleurs effectivement tracées (légende commune)
+    for ax, (panel, series) in zip(axes.flat, _HISTORY_PANELS, strict=True):
+        handles = []
+        for col, color_key, label in series:
+            if d[col].isna().all():
+                continue
+            league = color_key == "MUTED"
+
+            def hover(r, col=col, label=label):
+                rank = f"\n{int(r['Rang'])}e / {int(r['Équipes'])} · {int(r['J'])} matchs" \
+                    if pd.notna(r["Rang"]) else ""
+                return f"{r['Saison']} · {label} : {_num(r[col])}{rank}" + ("\nsaison en cours" if r["current"] else "")
+
+            handles.append(_season_line(ax, chart, d, col, getattr(theme, color_key), label, hover,
+                                        weak=None if league else current, ls=":" if league else "-",
+                                        lw=1.2 if league else 2))
+            kinds.add(color_key)
+        if panel.startswith("Points"):
+            for _, r in d.dropna(subset=["Rang", "Pts/match"]).iterrows():
+                ax.annotate(f"{int(r['Rang'])}e/{int(r['Équipes'])}", (r["_start"], r["Pts/match"]), xytext=(0, 8),
+                            textcoords="offset points", ha="center", fontsize=7.5, color=theme.INK2)
+        if not handles:
+            ax.text(0.5, 0.5, "Indisponible pour cette compétition", transform=ax.transAxes, ha="center",
+                    va="center", fontsize=8.5, color=theme.MUTED)
+        ax.set_title(panel, loc="left", fontsize=9.5, color=theme.INK)
+        ax.yaxis.grid(True)
+        ax.set_axisbelow(True)
+        ax.margins(x=0.08, y=0.25)
+        ax.set_xticks(ticks, d["Saison"].tolist(), fontsize=8)
+    legend = [Line2D([], [], color=theme.HOME, lw=2, marker="o", markersize=5, label="Réel (points, buts, PPDA)")]
+    if "AWAY" in kinds:
+        legend.append(Line2D([], [], color=theme.AWAY, lw=2, marker="o", markersize=5, label="Attendu (xPts, xG)"))
+    if "MUTED" in kinds:
+        legend.append(Line2D([], [], color=theme.MUTED, lw=1.2, ls=":", marker="o", markersize=4,
+                             label="Moyenne de la ligue"))
+    legend.append(Line2D([], [], color=theme.HOME, lw=2, ls="--", marker="o", markersize=5,
+                         markerfacecolor=theme.SURFACE, label="Saison en cours"))
+    fig.suptitle(title, x=0.01, ha="left", fontsize=11, fontweight="bold", color=theme.INK)
+    key.legend(handles=legend, loc="center left", ncol=len(legend), fontsize=8, frameon=False).set_in_layout(False)
+    fig.supxlabel(subtitle, x=0.01, ha="left", fontsize=8, color=theme.MUTED)
     chart.draw()
 
 

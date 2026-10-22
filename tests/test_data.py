@@ -1,11 +1,13 @@
 """Transformation des réponses API en DataFrames (sur des réponses réelles enregistrées)."""
 import numpy as np
 import pandas as pd
+import pytest
 
 from footapp.api.sofascore import ApiError
 from footapp.config import (
     ALL_PLAYER_METRICS,
     ALL_TEAM_METRICS,
+    CONTINENTAL_CUPS,
     LINEUP_BASE,
     LINEUP_GROUPS,
     PLAYER_METRICS,
@@ -119,11 +121,107 @@ def test_fiche_joueur(data, meta):
     assert dates.is_monotonic_increasing
 
 
+CAREER_COLUMNS = ["Saison", "Compétition", "Équipe", "Matchs", "Titularisations", "Minutes", "Buts", "Passes déc.",
+                  "xG", "xA", "Buts /90", "xG /90", "xA /90", "Passes clés /90", "Dribbles réussis /90", "% passes",
+                  "% duels", "Note moy.", "_start"]
+
+
 def test_carriere(data, meta):
     career = data.player_career(meta["player_id"])
     assert not career.empty
+    assert list(career.columns) == CAREER_COLUMNS  # même tableau qu'avant (formateur de player_season_rows)
     assert career["_start"].is_monotonic_decreasing
     assert (career["Minutes"] >= 0).all()
+
+
+def _overall_paths(recorded, pid):
+    return [p for p, r in recorded["responses"].items()
+            if p.startswith(f"/player/{pid}/unique-tournament/") and p.endswith("/statistics/overall")
+            and ((r or {}).get("statistics") or {}).get("appearances")]
+
+
+def test_lignes_competition_saison(data, meta, recorded):
+    pid = meta["player_id"]
+    rows = data.player_season_rows(pid, "G")
+    assert len(rows) == len(_overall_paths(recorded, pid))  # une ligne par compétition-saison jouée
+    assert set(ALL_PLAYER_METRICS) <= set(rows.columns)
+    assert set(rows["kind"]) <= {"league", "europe", "cup", "autre"} and "league" in set(rows["kind"])
+    europe = rows[rows["ut"].isin(CONTINENTAL_CUPS)]
+    assert (europe["kind"] == "europe").all()
+    # somme stricte : NaN dès qu'une composante manque (tirs contrés absents des saisons anciennes)
+    parts = rows[["tackles", "interceptions", "clearances", "outfielderBlocks"]]
+    assert rows.loc[parts.isna().any(axis=1), "defensiveActions"].isna().all()
+    assert np.allclose(rows.loc[parts.notna().all(axis=1), "defensiveActions"],
+                       parts.dropna().sum(axis=1))
+    assert rows["savePct"].notna().any()  # gardien : % d'arrêts calculé
+
+
+def test_lignes_ordre_des_requetes(data, meta):
+    """Championnats d'abord : avec peu de requêtes permises, aucune coupe d'Europe n'est demandée."""
+    rows = data.player_season_rows(meta["player_id"], max_requests=6)
+    asked = [p for p in data.client.requested if p.endswith("/statistics/overall")]
+    assert len(asked) == 6
+    assert not [p for p in asked if any(f"/unique-tournament/{ut}/" in p for ut in CONTINENTAL_CUPS)]
+    assert (rows["kind"] == "league").all()
+
+
+def test_historique_equipe(data, meta):
+    hist = data.team_history(meta["ut"], meta["history_team_id"])
+    assert len(hist) == 6 and hist["present"].all()
+    assert hist["current"].tolist() == [True] + [False] * 5
+    assert np.allclose(hist["Pts/match"], hist["Pts"] / hist["J"])
+    assert set(hist.loc[~hist["current"], "J"]) <= {34, 38}
+    assert (hist["Rang"] <= hist["Équipes"]).all()
+    assert (hist["Source"] == "Understat").all()
+    assert hist[["xG/match", "xGA/match", "xPts/match", "PPDA", "ligue xG/match", "ligue PPDA"]].notna().all().all()
+    assert (hist["ligue BP/match"] > 0).all()
+
+
+def test_historique_equipe_sans_understat(data_sofascore_only, meta):
+    hist = data_sofascore_only.team_history(meta["ut"], meta["history_team_id"])
+    assert len(hist) == 6 and (hist["Source"] == "Sofascore").all()
+    assert hist["xPts/match"].isna().all() and hist["ligue PPDA"].isna().all()
+    assert (hist["PPDA"] > 0).all()
+    assert hist["Grosses occas. concédées/match"].notna().all()
+
+
+class _HistoryClient:
+    """Une saison passée de Premier League : Everton sanctionné de 8 points (classement officiel 40, Understat 48)."""
+
+    def get(self, path, ttl=3600, permanent=False, slim=None):
+        if path.endswith("/seasons"):
+            return {"seasons": [{"id": 2, "year": "24/25"}, {"id": 1, "year": "23/24"}]}
+        if path == "/unique-tournament/17/season/1/standings/total":
+            rows = [{"team": {"id": 48, "name": "Everton"}, "position": 15, "matches": 38, "points": 40,
+                     "scoresFor": 40, "scoresAgainst": 51,
+                     "descriptions": [{"text": "8 points deducted due to decision by the Federation"}]},
+                    {"team": {"id": 7, "name": "Crystal Palace"}, "position": 10, "matches": 38, "points": 49,
+                     "scoresFor": 57, "scoresAgainst": 58, "descriptions": []}]
+            return {"standings": [{"name": "Premier League", "rows": rows}]}
+        return {"standings": []}  # saison en cours : équipe absente
+
+
+class _HistoryUnderstat:
+    @staticmethod
+    def supports(ut):
+        return True
+
+    def league_data(self, ut, season_start, ttl=0):
+        def match(pts):
+            return {"xG": 1.2, "xGA": 1.1, "xpts": 1.4, "pts": pts, "ppda": {"att": 200, "def": 20}}
+        everton = [match(3)] * 16 + [match(0)] * 22  # 48 points sur le terrain
+        return {"teams": {"1": {"title": "Everton", "history": everton},
+                          "2": {"title": "Crystal Palace", "history": [match(1)] * 38}}}
+
+
+def test_historique_points_officiels_avec_penalite():
+    hist = FootData(_HistoryClient(), _HistoryUnderstat()).team_history(17, 48, n_seasons=1)
+    assert hist["present"].tolist() == [False, True]
+    past = hist.iloc[1]
+    assert past["Pts"] == 40 and past["Pénalité"] == "−8 pts"  # officiel, pas les 48 d'Understat
+    assert past["Pts/match"] == pytest.approx(40 / 38)
+    assert past["xPts/match"] == pytest.approx(1.4) and past["PPDA"] == pytest.approx(10)
+    assert past["ligue BP/match"] == pytest.approx((40 + 57) / 76)
 
 
 def test_stats_equipes(data, meta):

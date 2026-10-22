@@ -11,12 +11,15 @@ from footapp.analysis import (
     pooled_shot_quality,
     rank_in,
     scout,
+    season_evolution,
     shot_breakdown,
     shot_summary,
     similar_players,
     value_model,
+    weighted_mean,
 )
 from footapp.config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITION_TEMPLATES
+from footapp.data import competition_kind
 
 
 def players(n=5):
@@ -213,3 +216,51 @@ def test_modele_valeur_plusieurs_championnats():
     coef = out.attrs["coef"]
     assert "age" not in coef
     assert sum(k in coef for k in ("L1", "PL", "Liga")) == 2  # une ligue de référence (drop_first)
+
+
+# --- évolution d'une saison à l'autre ------------------------------------------------------
+def season_rows():
+    rows = [  # (saison, compétition, kind, minutes, buts, % passes)
+        ("23/24", "Ligue 1", "league", 2000, 10, 80),
+        ("24/25", "Ligue 1", "league", 1000, 3, 85),     # transfert : ligne gardée (plus de minutes)
+        ("24/25", "Serie A", "league", 400, 5, 70),
+        ("25/26", "Ligue 1", "league", 150, 2, 90),      # sous le plancher de 180 min
+        ("24/25", "UEFA Champions League", "europe", 500, 1, 88),
+        ("24/25", "Coupe de France", "cup", 300, 4, 75),
+    ]
+    return pd.DataFrame([{"Saison": s, "Compétition": c, "Équipe": "X", "kind": k, "_start": 2000 + int(s[:2]),
+                          "latest": s == "25/26", "appearances": m // 90, "minutesPlayed": m, "goals": g,
+                          "accuratePassesPercentage": pct} for s, c, k, m, g, pct in rows])
+
+
+def test_evolution_par_saison():
+    rows = season_rows()
+    evo = season_evolution(rows, "goals", min_minutes=900, floor=180)
+    assert list(evo["Saison"]) == ["23/24", "24/25"]          # plancher et coupes exclus
+    assert list(evo["Compétition"]) == ["Ligue 1", "Ligue 1"]  # transfert : la ligne la plus fournie
+    assert np.allclose(evo["value"], [10 / 2000 * 90, 3 / 1000 * 90])  # cumul ramené aux 90 min
+    assert evo["reliable"].all()
+    assert weighted_mean(evo) == pytest.approx((10 + 3) / (2000 + 1000) * 90)  # Σ cumul / Σ minutes × 90
+    strict = season_evolution(rows, "goals", min_minutes=1500)
+    assert list(strict["reliable"]) == [True, False]
+    assert weighted_mean(strict) == pytest.approx(10 / 2000 * 90)  # saisons non fiables hors moyenne
+    pct = season_evolution(rows, "accuratePassesPercentage", kinds=("league", "europe"))
+    assert list(pct.loc[pct["kind"] == "league", "value"]) == [80, 85]  # pourcentage : jamais ramené aux 90 min
+    assert list(pct.loc[pct["kind"] == "europe", "value"]) == [88]
+    assert season_evolution(rows, "inconnue").empty
+
+
+def test_type_de_competition():
+    """Compétitions de Mbappé (vérifiées en direct) : (id, nom, category.slug) -> type attendu."""
+    cases = [
+        (7, "UEFA Champions League", "europe", "europe"), (679, "UEFA Europa League", "europe", "europe"),
+        (10783, "UEFA Nations League", "europe", "autre"), (8, "LaLiga", "spain", "league"),
+        (16, "FIFA World Cup", "world", "autre"), (11, "World Cup Qual. UEFA", "europe", "autre"),
+        (213, "Supercopa de España", "spain", "cup"), (329, "Copa del Rey", "spain", "cup"),
+        (357, "FIFA Club World Cup", "world", "autre"), (465, "UEFA Super Cup", "europe", "autre"),
+        (1, "EURO", "europe", "autre"), (27, "EURO, Qualification", "europe", "autre"),
+        (339, "Trophée des Champions", "france", "cup"), (34, "Ligue 1", "france", "league"),
+        (335, "Coupe de France", "france", "cup"), (333, "Coupe de la Ligue", "france", "cup"),
+        (258, "U19 European Championship", "europe", "autre"), (215, "Super League", "switzerland", "league"),
+    ]
+    assert [competition_kind(ut, name, slug) for ut, name, slug, _ in cases] == [kind for *_, kind in cases]

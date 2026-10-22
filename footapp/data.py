@@ -1,4 +1,5 @@
 """Accès aux données : appels API -> DataFrames pandas prêts à analyser."""
+import re
 from contextlib import ExitStack, contextmanager
 from datetime import date, datetime
 from functools import partial
@@ -10,6 +11,9 @@ from .analysis import expected_points
 from .api.sofascore import ApiError, SofascoreClient
 from .api.understat import UnderstatClient
 from .config import (
+    CONTINENTAL_CUPS,
+    CUP_WORDS,
+    INTERNATIONAL_SLUGS,
     PENALTY_BOX,
     PENALTY_XG,
     PLAYER_METRICS,
@@ -72,6 +76,21 @@ def link_team_ids(names, standings: pd.DataFrame) -> dict:
     return links
 
 
+def competition_kind(ut: int, name: str, slug: str) -> str:
+    """Type de compétition : "league" (championnat), "europe" (coupe d'Europe), "cup" (coupe nationale, supercoupe,
+    barrages) ou "autre" (sélections, compétitions internationales). category.slug vaut le pays pour les
+    championnats comme pour les coupes nationales : le nom départage."""
+    if ut in CONTINENTAL_CUPS:
+        return "europe"
+    if slug in INTERNATIONAL_SLUGS:
+        return "autre"
+    low = str(name).lower()
+    return "cup" if any(word in low for word in CUP_WORDS) else "league"
+
+
+_DEDUCTION = re.compile(r"(\d+) points? deducted", re.IGNORECASE)
+
+
 def _stat(stats: dict, key: str) -> float:
     """Valeur d'une statistique Sofascore (0 si absente)."""
     return stats.get(key) or 0
@@ -79,12 +98,6 @@ def _stat(stats: dict, key: str) -> float:
 
 def _stat_rounded(stats: dict, key: str, digits: int = 2) -> float:
     return round(float(_stat(stats, key)), digits)
-
-
-def _stat_per90(stats: dict, minutes: float, key: str) -> float | None:
-    if not minutes or stats.get(key) is None:
-        return None
-    return round(stats[key] / minutes * 90, 2)
 
 
 def _side_value(stats: pd.DataFrame, key: str, side: str) -> float:
@@ -240,7 +253,9 @@ class FootData:
         return self.add_player_derived(df)
 
     @staticmethod
-    def add_player_derived(df: pd.DataFrame) -> pd.DataFrame:
+    def add_player_derived(df: pd.DataFrame, strict: bool = False) -> pd.DataFrame:
+        """strict : une somme dont une composante manque vaut NaN (saisons anciennes où Sofascore n'avait pas
+        encore tous les champs : sinon la valeur chute artificiellement)."""
         df = df.copy()  # défragmente avant d'ajouter des colonnes
         pens = df["penaltiesTaken"].fillna(0)
         df["npxg"] = (df["expectedGoals"] - PENALTY_XG * pens).clip(lower=0)
@@ -249,7 +264,8 @@ class FootData:
         df["shotOnTargetPct"] = _ratio(df["shotsOnTarget"], df["totalShots"], 100)
         df["xgPerShot"] = _ratio(df["expectedGoals"], df["totalShots"])
         defensive = ["tackles", "interceptions", "clearances", "outfielderBlocks"]
-        df["defensiveActions"] = df[defensive].fillna(0).sum(axis=1)
+        df["defensiveActions"] = df[defensive].sum(axis=1, skipna=False) if strict else \
+            df[defensive].fillna(0).sum(axis=1)
         df["savePct"] = np.where(df["pos"] == "G",
                                  _ratio(df["saves"], df["saves"].fillna(0) + df["goalsConceded"].fillna(0), 100),
                                  np.nan)
@@ -381,43 +397,81 @@ class FootData:
             df.insert(0, "Date", df.pop("date").dt.strftime("%d/%m/%Y"))
         return df
 
-    def player_career(self, pid: int, max_seasons: int = 16, progress=None) -> pd.DataFrame:
-        """Statistiques du joueur saison par saison, toutes compétitions confondues."""
+    SEASON_ROW_COLUMNS = ("Saison", "Compétition", "Équipe", "kind", "_start", "latest", "ut", "pos")
+
+    def player_season_rows(self, pid: int, pos: str | None = None, max_requests: int = 16, league_seasons: int = 8,
+                           progress=None) -> pd.DataFrame:
+        """Une ligne par compétition-saison jouée : toutes les métriques joueur (cumuls) + dérivées, avec Saison,
+        Compétition, Équipe, kind (voir competition_kind ; sélection nationale -> "autre"), _start (année de
+        début) et latest (dernière saison du joueur dans cette compétition).
+
+        Ordre des requêtes (au plus `max_requests`) : championnats des `league_seasons` saisons les plus récentes,
+        puis coupes d'Europe de ces saisons, puis le reste. Saison passée -> cache permanent."""
         data = self.client.get(f"/player/{pid}/statistics/seasons", ttl=24 * HOUR) or {}
         entries = []
         for t in data.get("uniqueTournamentSeasons", []):
             tour = t["uniqueTournament"]
+            kind = competition_kind(tour["id"], tour.get("name", ""), (tour.get("category") or {}).get("slug", ""))
             for i, s in enumerate(t.get("seasons", [])):
-                entries.append((tour["id"], tour["name"], s["id"], s.get("year", ""), i == 0))
-        # plus récentes d'abord : "26/27" -> 2026, "2025" -> 2025
-        entries.sort(key=lambda e: _season_start(e[3]), reverse=True)
+                year = s.get("year", "")
+                entries.append({"ut": tour["id"], "comp": tour.get("name", ""), "sid": s["id"], "year": year,
+                                "latest": i == 0, "kind": kind, "start": _season_start(year)})
+        recent = set(sorted({e["start"] for e in entries}, reverse=True)[:league_seasons])
+
+        def priority(e):
+            if e["start"] in recent and e["kind"] in ("league", "europe"):
+                return 0 if e["kind"] == "league" else 1
+            return 2
+
+        entries.sort(key=lambda e: (priority(e), -e["start"]))
+        entries = entries[:max_requests]
         rows = []
-        for n, (ut, comp, sid, year, latest) in enumerate(entries[:max_seasons]):
+        for n, e in enumerate(entries):
             if progress:
-                progress(f"Carrière : {comp} {year} ({n + 1}/{min(len(entries), max_seasons)})")
+                progress(f"Carrière : {e['comp']} {e['year']} ({n + 1}/{len(entries)})")
             # une saison passée ne bouge plus -> cache permanent
-            d = self.client.get(f"/player/{pid}/unique-tournament/{ut}/season/{sid}/statistics/overall",
-                                ttl=6 * HOUR, permanent=not latest) or {}
+            d = self.client.get(f"/player/{pid}/unique-tournament/{e['ut']}/season/{e['sid']}/statistics/overall",
+                                ttl=6 * HOUR, permanent=not e["latest"]) or {}
             s = d.get("statistics") or {}
             if not s.get("appearances"):
                 continue
-            minutes = s.get("minutesPlayed") or 0
-            per90 = partial(_stat_per90, s, minutes)
-            rows.append({
-                "Saison": year, "Compétition": comp, "Équipe": (d.get("team") or {}).get("name", ""),
-                "Matchs": s.get("appearances"), "Titularisations": s.get("matchesStarted"), "Minutes": minutes,
-                "Buts": s.get("goals"), "Passes déc.": s.get("assists"),
-                "xG": s.get("expectedGoals"), "xA": s.get("expectedAssists"),
-                "Buts /90": per90("goals"), "xG /90": per90("expectedGoals"), "xA /90": per90("expectedAssists"),
-                "Passes clés /90": per90("keyPasses"), "Dribbles réussis /90": per90("successfulDribbles"),
-                "% passes": s.get("accuratePassesPercentage"), "% duels": s.get("totalDuelsWonPercentage"),
-                "Note moy.": s.get("rating"), "_start": _season_start(year),
-            })
-        df = pd.DataFrame(rows)
-        for col in ("xG", "xA", "% passes", "% duels", "Note moy."):
-            if col in df:
-                df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
-        return df
+            team = d.get("team") or {}
+            row = {k: s.get(k) for k in PLAYER_METRICS}
+            row.update({"Saison": e["year"], "Compétition": e["comp"], "Équipe": team.get("name", ""),
+                        "kind": "autre" if team.get("national") else e["kind"], "_start": e["start"],
+                        "latest": e["latest"], "ut": e["ut"], "pos": pos})
+            rows.append(row)
+        df = pd.DataFrame(rows, columns=[*PLAYER_METRICS, *self.SEASON_ROW_COLUMNS])
+        keys = list(PLAYER_METRICS)
+        df[keys] = df[keys].apply(pd.to_numeric, errors="coerce")
+        return self.add_player_derived(df, strict=True)
+
+    @staticmethod
+    def career_table(rows: pd.DataFrame) -> pd.DataFrame:
+        """Tableau « saison par saison » (plus récentes d'abord) à partir de player_season_rows ; garde l'index
+        des lignes pour y joindre d'autres colonnes."""
+        rows = rows.sort_values("_start", ascending=False, kind="stable")
+        minutes = rows["minutesPlayed"].fillna(0)
+
+        def per90(key):
+            return (rows[key] / minutes.where(minutes > 0) * 90).round(2)
+
+        table = pd.DataFrame({
+            "Saison": rows["Saison"], "Compétition": rows["Compétition"], "Équipe": rows["Équipe"],
+            "Matchs": rows["appearances"], "Titularisations": rows["matchesStarted"], "Minutes": minutes,
+            "Buts": rows["goals"], "Passes déc.": rows["assists"],
+            "xG": rows["expectedGoals"].round(2), "xA": rows["expectedAssists"].round(2),
+            "Buts /90": per90("goals"), "xG /90": per90("expectedGoals"), "xA /90": per90("expectedAssists"),
+            "Passes clés /90": per90("keyPasses"), "Dribbles réussis /90": per90("successfulDribbles"),
+            "% passes": rows["accuratePassesPercentage"].round(2), "% duels": rows["totalDuelsWonPercentage"].round(2),
+            "Note moy.": rows["rating"].round(2), "_start": rows["_start"],
+        }, index=rows.index)
+        return table
+
+    def player_career(self, pid: int, max_seasons: int = 16, progress=None) -> pd.DataFrame:
+        """Statistiques du joueur saison par saison, toutes compétitions confondues."""
+        rows = self.player_season_rows(pid, max_requests=max_seasons, progress=progress)
+        return self.career_table(rows).reset_index(drop=True)
 
     # --- joueur : tirs et heatmap de la saison ---------------------------------
     def _is_current_season(self, ut: int, sid: int) -> bool:
@@ -713,6 +767,104 @@ class FootData:
         df["ppda"] = _ratio(df["ownHalfPassesTotalAgainst"],
                             df[["tackles", "interceptions", "fouls"]].sum(axis=1, min_count=1))
         return df
+
+    # --- équipe : historique sur plusieurs saisons -------------------------------
+    def team_history(self, ut: int, team_id: int, n_seasons: int = 5, progress=None) -> pd.DataFrame:
+        """Une ligne par saison (en cours + `n_seasons` précédentes) : rang, points et buts officiels (classement
+        Sofascore, pénalités incluses) ; xG, xGA, xPts et PPDA d'Understat pour les 5 grands championnats, sinon
+        grosses occasions, tirs concédés et PPDA approché des statistiques de saison Sofascore (1 requête/saison).
+        present=False si l'équipe ne jouait pas dans la compétition cette saison-là."""
+        rows = []
+        seasons = self.seasons(ut)[:n_seasons + 1]
+        for k, season in enumerate(seasons):
+            sid, name, past = season["id"], season["name"], k > 0
+            if progress:
+                progress(f"Historique : saison {name} ({k + 1}/{len(seasons)})")
+            row = {"Saison": name, "_start": _season_start(name), "current": not past, "present": False}
+            rows.append(row)
+            st = self.client.get(f"{_ut(ut, sid)}/standings/total", ttl=HOUR, permanent=past) or {}
+            groups = [g for g in st.get("standings", []) if any(r["team"]["id"] == team_id for r in g.get("rows", []))]
+            if not groups:
+                continue
+            group = max(groups, key=lambda g: len(g["rows"]))  # MLS : classement général plutôt que conférence
+            table = group["rows"]
+            r = next(r for r in table if r["team"]["id"] == team_id)
+            played = r.get("matches") or 0
+            deducted = sum(int(m.group(1)) for d in r.get("descriptions") or []
+                           for m in _DEDUCTION.finditer(str(d.get("text", ""))))
+            league_matches = sum(x.get("matches") or 0 for x in table)
+            row.update({
+                "present": True, "Équipe": r["team"]["name"], "Rang": r.get("position"), "Équipes": len(table),
+                "J": played, "Pts": r.get("points"), "Pénalité": f"−{deducted} pts" if deducted else "",
+                "Pts/match": r["points"] / played if played else np.nan,
+                "BP/match": (r.get("scoresFor") or 0) / played if played else np.nan,
+                "BC/match": (r.get("scoresAgainst") or 0) / played if played else np.nan,
+                "ligue BP/match": sum(x.get("scoresFor") or 0 for x in table) / league_matches
+                if league_matches else np.nan,
+            })
+            standings = pd.DataFrame({"Équipe": [x["team"]["name"] for x in table],
+                                      "team_id": [x["team"]["id"] for x in table]})
+            if not self._understat_history(row, ut, row["_start"], past, team_id, standings):
+                self._sofascore_history(row, ut, sid, past, team_id)
+        df = pd.DataFrame(rows)
+        for col in self.HISTORY_COLUMNS:
+            if col not in df:
+                df[col] = np.nan
+        return df[list(self.HISTORY_COLUMNS)]
+
+    HISTORY_COLUMNS = ("Saison", "Équipe", "Rang", "Équipes", "J", "Pts", "Pénalité", "Pts/match", "xPts/match",
+                       "BP/match", "xG/match", "BC/match", "xGA/match", "PPDA", "ligue BP/match", "ligue xG/match",
+                       "ligue PPDA", "Grosses occas./match", "Grosses occas. concédées/match", "Tirs concédés/match",
+                       "Source", "present", "current", "_start")
+
+    def _understat_history(self, row: dict, ut: int, start: int, past: bool, team_id: int,
+                           standings: pd.DataFrame) -> bool:
+        """Complète `row` avec Understat (5 grands championnats) ; False si indisponible ou équipe non reconnue."""
+        if self.understat is None or not self.understat.supports(ut):
+            return False
+        try:
+            us = self.understat.league_data(ut, start, ttl=float("inf") if past else 3 * HOUR)
+        except ApiError:
+            return False
+        teams = list((us or {}).get("teams", {}).values())
+        links = link_team_ids([t["title"] for t in teams], standings)
+        team = next((t for t in teams if links.get(t["title"]) == team_id), None)
+        if team is None or not team.get("history"):
+            return False
+
+        def total(history, key):
+            return sum(float(h.get(key) or 0) for h in history)
+
+        def ppda(history):
+            att = sum((h.get("ppda") or {}).get("att") or 0 for h in history)
+            dfn = sum((h.get("ppda") or {}).get("def") or 0 for h in history)
+            return att / dfn if dfn else np.nan
+
+        h, n = team["history"], len(team["history"])
+        everyone = [m for t in teams for m in t.get("history", [])]
+        row.update({"xPts/match": total(h, "xpts") / n, "xG/match": total(h, "xG") / n,
+                    "xGA/match": total(h, "xGA") / n, "PPDA": ppda(h),
+                    "ligue xG/match": total(everyone, "xG") / len(everyone), "ligue PPDA": ppda(everyone),
+                    "Source": "Understat"})
+        return True
+
+    def _sofascore_history(self, row: dict, ut: int, sid: int, past: bool, team_id: int):
+        data = self.client.get(f"/team/{team_id}{_ut(ut, sid)}/statistics/overall", ttl=3 * HOUR,
+                               permanent=past) or {}
+        s = data.get("statistics") or {}
+        n = s.get("matches") or row.get("J") or 0
+        if not s or not n:
+            return
+
+        def per_match(key):
+            return s[key] / n if isinstance(s.get(key), (int, float)) else np.nan
+
+        actions = sum(s.get(k) or 0 for k in ("tackles", "interceptions", "fouls"))
+        passes = s.get("ownHalfPassesTotalAgainst")
+        row.update({"xG/match": per_match("expectedGoals"), "Grosses occas./match": per_match("bigChances"),
+                    "Grosses occas. concédées/match": per_match("bigChancesAgainst"),
+                    "Tirs concédés/match": per_match("shotsAgainst"),
+                    "PPDA": passes / actions if passes and actions else np.nan, "Source": "Sofascore"})
 
     # --- équipe x match (classement xG, forme, pronostics) -------------------
     def team_matches(self, ut: int, sid: int, progress=None) -> pd.DataFrame:

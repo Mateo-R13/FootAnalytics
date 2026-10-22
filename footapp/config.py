@@ -201,6 +201,16 @@ POSITION_TEMPLATES = {
           "successfulRunsOut", "accuratePassesPercentage", "accurateLongBalls", "accurateLongBallsPercentage"],
 }
 
+# Évolution d'une saison à l'autre (fiche joueur, onglet « Évolution & carrière »)
+EVOLUTION_MIN_MINUTES = 900  # en dessous : saison tracée en pointillés (échantillon réduit)
+EVOLUTION_FLOOR = 180        # en dessous : saison ignorée
+CONTINENTAL_CUPS = {7, 679, 17015}  # Ligue des champions, Ligue Europa, Ligue Conférence
+# category.slug des compétitions internationales (sélections, Coupe du monde des clubs…)
+INTERNATIONAL_SLUGS = {"europe", "world", "south-america", "north-and-central-america", "asia", "africa", "oceania"}
+CUP_WORDS = ("cup", "coupe", "copa", "coppa", "pokal", "beker", "taça", "troph", "shield", "playoff", "play-off",
+             "friendl")
+DEFAULT_EVOLUTION = {"F": "npxg", "M": "expectedGoalInvolvements", "D": "totalDuelsWonPercentage", "G": "savePct"}
+
 # ---------------------------------------------------------------------------
 # Métriques équipe (saison). clé -> (libellé, catégorie, type) - mêmes types que joueurs
 # ("count" = divisible par le nombre de matchs)
