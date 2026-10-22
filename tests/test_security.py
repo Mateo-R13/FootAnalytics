@@ -98,3 +98,18 @@ def test_avant_match_textes_api_en_texte_brut(qapp):
     label = _plain("\n".join(info_lines(c, "X")))
     assert label.textFormat() == Qt.PlainText
     assert "<a href='x'>S</a>" in label.text() and "<b>R</b>" in label.text()
+
+
+def test_bandeau_message_echappe_affiche_tel_quel(qapp):
+    """Message de l'API : balises neutralisées, entités décodées (« l'accès », pas « l&#x27;accès »)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QTextDocument
+
+    from footapp.ui.widgets import Banner
+
+    banner = Banner()
+    banner.show_message("Sofascore bloque l'accès <b>x</b>")
+    assert banner.text.textFormat() == Qt.TextFormat.RichText
+    doc = QTextDocument()
+    doc.setHtml(banner.text.text())
+    assert doc.toPlainText() == "Sofascore bloque l'accès <b>x</b>"

@@ -149,6 +149,8 @@ class Banner(QFrame):
         ic = QLabel()
         ic.setPixmap(icon("fa5s.exclamation-triangle", "#fbbf24").pixmap(16, 16))
         self.text = QLabel()
+        # toujours du HTML : sinon un message échappé sans balise s'afficherait avec ses entités (« l&#x27;accès »)
+        self.text.setTextFormat(Qt.TextFormat.RichText)
         self.text.setWordWrap(True)
         self.text.setOpenExternalLinks(True)
         close = QPushButton(icon("fa5s.times", theme.INK2), "")
