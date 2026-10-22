@@ -2,7 +2,7 @@
 
 Application de bureau pour **data analysts football** : statistiques de la saison en cours
 (passes, dribbles, duels, xG/xA, tirs, pressing…), fiches joueurs, comparaisons et analyse de matchs.
-Python + PySide6, avec installeur Windows (thème sombre ou clair).
+Python + PySide6, pour Windows (installeur), macOS (Apple Silicon) et Linux (thème sombre ou clair).
 
 ![Tableau de bord](docs/screenshots/dashboard.png)
 
@@ -47,11 +47,31 @@ La compétition, la saison et la page ouvertes sont retrouvées au lancement sui
 
 ## Installation
 
-### Installeur (recommandé)
+### Windows : installeur (recommandé)
 Télécharger `FootAnalytics-Setup-<version>.exe` dans les [Releases](../../releases) (ou l'artefact du dernier
 build dans l'onglet *Actions*) et le lancer : installation sans droits administrateur, raccourcis menu Démarrer
 et Bureau, désinstallation depuis les paramètres Windows. Une version portable (`.zip`) est aussi fournie.
 Aucune installation de Python nécessaire.
+
+### macOS (Apple Silicon, macOS 14 ou plus récent)
+Télécharger `FootAnalytics-<version>-macos-arm64.zip`, le décompresser et glisser `FootAnalytics.app` dans
+*Applications*. L'application n'est pas signée par un développeur identifié Apple (signature ad hoc seulement) :
+Gatekeeper la bloque au premier lancement. Au choix :
+- clic droit (ou Ctrl-clic) sur l'application > **Ouvrir**, puis **Ouvrir** dans la boîte de dialogue
+  (sur macOS 15 : *Réglages Système > Confidentialité et sécurité > Ouvrir quand même*) ;
+- ou retirer l'attribut de quarantaine dans le Terminal :
+  `xattr -dr com.apple.quarantine /Applications/FootAnalytics.app`
+
+Données : `~/Library/Application Support/FootAnalytics`.
+
+### Linux (x86_64, glibc 2.34 ou plus récent : Ubuntu 22.04, Debian 12, Fedora 35…)
+```bash
+tar -xzf FootAnalytics-<version>-linux-x86_64.tar.gz
+./FootAnalytics/FootAnalytics
+```
+Bibliothèques système requises (déjà présentes sur un bureau courant) ; sur Debian/Ubuntu :
+`sudo apt install libegl1 libgl1 libfontconfig1 libdbus-1-3 libxkbcommon-x11-0 libxcb-cursor0`.
+Données : `$XDG_DATA_HOME/FootAnalytics` (par défaut `~/.local/share/FootAnalytics`).
 
 ### Depuis les sources
 ```powershell
@@ -59,6 +79,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock   # versions exactes
 .\.venv\Scripts\python.exe main.py
 ```
+Sous macOS et Linux : `python3 -m venv .venv`, puis `.venv/bin/python -m pip install -r requirements.lock` et
+`.venv/bin/python main.py`.
 
 ### Construire l'application
 ```powershell
@@ -66,9 +88,16 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 # -> dist\FootAnalytics\ (application), dist\FootAnalytics-<version>-portable.zip,
 #    dist\FootAnalytics-Setup-<version>.exe (si Inno Setup 6 est installé : winget install JRSoftware.InnoSetup)
 ```
-Le workflow GitHub Actions (`.github/workflows/build.yml`) le fait automatiquement à chaque push sur `main` ;
-pousser un tag `v*` (ex. `git tag v2.4.0 && git push --tags`) publie l'installeur et le zip dans une Release.
-L'icône se régénère avec `python tools\make_icon.py`.
+Sous macOS et Linux :
+```bash
+./build.sh
+# macOS -> dist/FootAnalytics.app (signée ad hoc) et dist/FootAnalytics-<version>-macos-arm64.zip
+# Linux -> dist/FootAnalytics/ et dist/FootAnalytics-<version>-linux-x86_64.tar.gz
+```
+Le workflow GitHub Actions (`.github/workflows/build.yml`) le fait automatiquement à chaque push sur `main`, sur
+Windows, macOS et Linux (tests sur les trois systèmes) ; pousser un tag `v*` (ex. `git tag v2.4.0 && git push --tags`)
+publie l'installeur et les archives des trois systèmes dans une Release.
+L'icône (`.png`, `.ico`, `.icns`) se régénère avec `python tools\make_icon.py`.
 
 ## Développement
 
@@ -96,10 +125,13 @@ $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # 
   entièrement annoté. Côté interface, énumérations Qt en nom complet (`Qt.AlignmentFlag.AlignLeft`) et
   `widgets.named()` pour nommer un widget ; ne jamais donner à un attribut le nom d'une méthode Qt (`event`,
   `metric`, `palette`, `actions`…) : PySide6 prendrait l'attribut pour une surcharge de la méthode virtuelle.
-- **Intégration continue** (GitHub Actions) : ruff, mypy, pip-audit, tests avec couverture, puis construction de
-  l'installeur ; sur un tag, vérification que le tag correspond à la version de l'application avant publication.
-- **Journal** : `%LOCALAPPDATA%\FootAnalytics\logs\footanalytics.log` (erreurs avec leur trace complète),
-  accessible depuis Aide & paramètres.
+- **Intégration continue** (GitHub Actions) : ruff, mypy, pip-audit, tests avec couverture sous Windows, macOS
+  et Linux, puis construction de l'installeur et des archives macOS et Linux (l'application construite est lancée
+  pour vérifier qu'elle démarre) ; sur un tag, vérification que le tag correspond à la version de l'application
+  avant publication.
+- **Journal** : `logs/footanalytics.log` dans le dossier de données (Windows : `%LOCALAPPDATA%\FootAnalytics`,
+  macOS : `~/Library/Application Support/FootAnalytics`, Linux : `~/.local/share/FootAnalytics`) :
+  erreurs avec leur trace complète, accessible depuis Aide & paramètres.
 
 ## Performances
 
@@ -132,7 +164,7 @@ des champions, la Ligue Europa et les 5 grands championnats.
 - **Usage personnel / expérimental uniquement** : l'API n'est pas documentée et ses conditions
   n'autorisent pas un usage commercial.
 - Elle peut changer ou bloquer sans préavis : tout l'accès réseau est isolé dans `footapp/api/sofascore.py`.
-- Cache disque dans `%LOCALAPPDATA%\FootAnalytics\cache` : matchs terminés conservés définitivement,
+- Cache disque dans le sous-dossier `cache` du dossier de données (Windows : `%LOCALAPPDATA%\FootAnalytics`) : matchs terminés conservés définitivement,
   le reste de 15 min à 12 h (effectifs, valeurs et contrats : 3 jours). Le bouton « Actualiser » vide le cache
   temporaire.
 - Valeurs marchandes : estimations Sofascore (pas des prix de transfert) ; effectifs, âges et contrats décrivent

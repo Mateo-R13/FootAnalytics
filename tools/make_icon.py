@@ -1,4 +1,4 @@
-"""Génère l'icône de l'application (assets/icon.png et assets/icon.ico).
+"""Génère l'icône de l'application (assets/icon.png, icon.ico pour Windows, icon.icns pour macOS).
 
 Usage : .venv\\Scripts\\python.exe tools\\make_icon.py
 Carré arrondi en dégradé vert -> bleu -> violet (couleurs de la marque) et ballon blanc.
@@ -43,6 +43,7 @@ def main():
     render().save(str(full))
     Image.open(full).save(ASSETS / "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64),
                                                       (128, 128), (256, 256)])
+    Image.open(full).save(ASSETS / "icon.icns")  # toutes les tailles macOS, de 16 à 512 px
     full.unlink()
     print("icône générée dans", ASSETS)
     del app

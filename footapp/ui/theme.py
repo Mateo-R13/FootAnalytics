@@ -8,11 +8,18 @@ Deux familles de couleurs, à ne pas mélanger :
 Le mode est choisi au démarrage (configure) : les jetons ci-dessous sont des variables de module
 lues au moment du dessin, donc tout le code les utilise via `theme.NOM`.
 """
+import re
+import sys
 from typing import Any
 
 import matplotlib as mpl
 from matplotlib.colors import LinearSegmentedColormap
 from PySide6.QtGui import QColor, QPalette
+
+# police de l'interface selon le système (Segoe UI n'existe que sous Windows)
+UI_FONT = {"win32": "Segoe UI", "darwin": "Helvetica Neue"}.get(sys.platform, "DejaVu Sans")
+# macOS compte 72 points par pouce (96 ailleurs) : tailles agrandies pour garder le même rendu
+PT_SCALE = 4 / 3 if sys.platform == "darwin" else 1.0
 
 MODES: dict[str, dict[str, Any]] = {  # jetons (texte) et listes de couleurs
     "dark": {
@@ -107,7 +114,7 @@ def apply_matplotlib():
         "ytick.labelcolor": INK2,
         "grid.color": GRID,
         "grid.linewidth": 0.6,
-        "font.family": ["Segoe UI", "DejaVu Sans"],
+        "font.family": list(dict.fromkeys([UI_FONT, "DejaVu Sans"])),
         "font.size": 9,
         "legend.frameon": False,
         "legend.labelcolor": INK2,
@@ -134,8 +141,20 @@ def apply_qt(app):
 
 
 def stylesheet() -> str:
+    return _scale_points(_stylesheet())
+
+
+def _scale_points(qss: str, scale: float | None = None) -> str:
+    """Applique PT_SCALE aux tailles en points de la feuille de style."""
+    factor = PT_SCALE if scale is None else scale
+    if factor == 1:
+        return qss
+    return re.sub(r"(\d+(?:\.\d+)?)pt\b", lambda m: f"{float(m.group(1)) * factor:.3g}pt", qss)
+
+
+def _stylesheet() -> str:
     return f"""
-QWidget {{ font-family: 'Segoe UI'; font-size: 10pt; color: {INK}; }}
+QWidget {{ font-family: '{UI_FONT}'; font-size: 10pt; color: {INK}; }}
 QMainWindow, #Content {{ background: {BG}; }}
 
 /* --- barre latérale --- */

@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,7 @@ from footapp.api import espn, sofascore, understat
 from footapp.api.espn import EspnClient
 from footapp.api.sofascore import ApiError, SofascoreClient
 from footapp.api.understat import UnderstatClient
+from footapp.config import data_dir
 from footapp.data import FootData
 
 
@@ -292,3 +294,13 @@ def test_journal_sur_la_console_si_dossier_inaccessible(tmp_path, monkeypatch, i
     monkeypatch.setattr(logs, "LOG_DIR", blocker / "logs")  # parent = fichier : création impossible
     logs.setup_logging()
     assert type(isolated_logger.handlers[0]) is logging.StreamHandler
+
+
+def test_dossier_de_donnees_selon_le_systeme(tmp_path):
+    home = tmp_path
+    assert data_dir("win32", {"LOCALAPPDATA": str(tmp_path / "local")}, home) == tmp_path / "local" / "FootAnalytics"
+    assert data_dir("win32", {}, home) == home / "FootAnalytics"
+    assert data_dir("darwin", {}, home) == home / "Library" / "Application Support" / "FootAnalytics"
+    assert data_dir("linux", {}, home) == home / ".local" / "share" / "FootAnalytics"
+    assert data_dir("linux", {"XDG_DATA_HOME": "/srv/donnees"}, home) == Path("/srv/donnees") / "FootAnalytics"
+    assert data_dir("linux", {"XDG_DATA_HOME": "relatif"}, home) == home / ".local" / "share" / "FootAnalytics"

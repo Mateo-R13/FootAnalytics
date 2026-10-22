@@ -1,4 +1,4 @@
-"""Journal de l'application : fichier tournant dans %LOCALAPPDATA%\\FootAnalytics\\logs.
+"""Journal de l'application : fichier tournant dans le sous-dossier logs du dossier de données (config.data_dir).
 
 Les erreurs non gérées (fil principal et fils d'arrière-plan) y sont enregistrées avec leur trace
 complète : indispensable pour diagnostiquer un problème signalé par un utilisateur.

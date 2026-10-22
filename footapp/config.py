@@ -1,13 +1,32 @@
 """Constantes de l'application : compétitions, catalogue des métriques, libellés."""
 import os
 import sys
-from pathlib import Path
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 
 APP_NAME = "FootAnalytics"
 APP_VERSION = "2.4.0"
 GITHUB_REPO = "Mateo-R13/FootAnalytics"
 
-DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+
+def data_dir(platform: str = sys.platform, environ: Mapping[str, str] = os.environ,
+             home: Path | None = None) -> Path:
+    """Dossier des données de l'utilisateur (cache, journal), selon le système.
+
+    Windows : %LOCALAPPDATA% · macOS : ~/Library/Application Support · Linux : $XDG_DATA_HOME ou ~/.local/share.
+    """
+    home = home or Path.home()
+    if platform == "win32":
+        base = Path(environ.get("LOCALAPPDATA") or home)
+    elif platform == "darwin":
+        base = home / "Library" / "Application Support"
+    else:
+        xdg = environ.get("XDG_DATA_HOME", "")  # chemin relatif : ignoré (spécification XDG)
+        base = Path(xdg) if PurePosixPath(xdg).is_absolute() else home / ".local" / "share"
+    return base / APP_NAME
+
+
+DATA_DIR = data_dir()
 CACHE_DIR = DATA_DIR / "cache"
 LOG_DIR = DATA_DIR / "logs"
 

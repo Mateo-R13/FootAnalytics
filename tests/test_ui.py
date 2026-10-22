@@ -410,3 +410,11 @@ def test_secours_espn(qapp, recorded):
     finally:
         w.close()
         sys.excepthook = previous_hook
+
+
+def test_tailles_de_police_adaptees_a_macos():
+    from footapp.ui import theme
+    qss = "QLabel { font-size: 9pt; } #A { font-size: 10.5pt; padding: 4px; }"
+    assert theme._scale_points(qss, 1) == qss
+    assert theme._scale_points(qss, 4 / 3) == "QLabel { font-size: 12pt; } #A { font-size: 14pt; padding: 4px; }"
+    assert theme.UI_FONT in theme.stylesheet()

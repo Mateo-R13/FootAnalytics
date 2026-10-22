@@ -2,6 +2,8 @@
 # Pour les mettre à jour : environnement vierge, puis
 #   python -m pip install -r requirements.txt
 #   python -m pip freeze > requirements.lock
+# puis remettre les marqueurs de plateforme (dépendances de PyInstaller propres à Windows ou macOS),
+# et vérifier que chaque version a des roues Windows x64, macOS arm64 et manylinux x86_64 pour Python 3.12.
 altgraph==0.17.5
 certifi==2026.10.19
 cffi==2.1.1
@@ -16,7 +18,8 @@ numpy==2.5.4
 openpyxl==3.1.5
 packaging==26.3
 pandas==3.0.6
-pefile==2024.8.26
+macholib==1.16.4; sys_platform == "darwin"
+pefile==2024.8.26; sys_platform == "win32"
 pillow==13.0.0
 pycparser==3.11
 pyinstaller==6.22.3
@@ -24,7 +27,7 @@ pyinstaller-hooks-contrib==2026.8
 pyparsing==3.3.3
 PySide6_Essentials==6.12.0
 python-dateutil==2.9.0.post0
-pywin32-ctypes==0.2.3
+pywin32-ctypes==0.2.3; sys_platform == "win32"
 QtAwesome==1.4.2
 QtPy==2.4.3
 shiboken6==6.12.0
