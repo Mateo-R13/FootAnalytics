@@ -1,7 +1,7 @@
 """Accès aux données : appels API -> DataFrames pandas prêts à analyser."""
 import re
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import date, datetime
 from functools import partial
 from typing import Any
@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .analysis import expected_points, season_prior
+from .api.espn import EspnClient
 from .api.sofascore import ApiError, SofascoreClient
 from .api.understat import UnderstatClient
 from .config import (
@@ -176,15 +177,17 @@ def _timestamp(value: Any) -> pd.Timestamp:
 
 
 class FootData:
-    def __init__(self, client: SofascoreClient, understat: UnderstatClient | None = None):
+    def __init__(self, client: SofascoreClient, understat: UnderstatClient | None = None,
+                 espn: EspnClient | None = None):
         self.client = client
         self.understat = understat
+        self.espn = espn  # secours réduit (classement, résultats, calendrier), seulement après un échec
 
     @contextmanager
     def cache_first(self) -> Iterator[None]:
         """Toutes les sources lisent leur cache même expiré dans ce bloc (affichage immédiat)."""
         with ExitStack() as stack:
-            for source in (self.client, self.understat):
+            for source in (self.client, self.understat, self.espn):
                 cache_first = getattr(source, "cache_first", None)  # absent : source facultative ou factice
                 if cache_first is not None:
                     stack.enter_context(cache_first())
@@ -211,11 +214,17 @@ class FootData:
         except ApiError:
             fallback = self._understat_standings(ut, sid)
             if fallback is None:
+                fallback = self._espn_standings(ut, sid)
+            if fallback is None:
                 raise
             return fallback
 
     def _standings(self, ut: int, sid: int) -> pd.DataFrame:
-        data = self.client.get(f"{_ut(ut, sid)}/standings/total", ttl=HOUR) or {}
+        return self._parse_standings(self.client.get(f"{_ut(ut, sid)}/standings/total", ttl=HOUR))
+
+    @staticmethod
+    def _parse_standings(data: dict | None) -> pd.DataFrame:
+        data = data or {}
         rows = []
         for group in data.get("standings", []):
             for r in group.get("rows", []):
@@ -906,14 +915,26 @@ class FootData:
             us = self._understat(ut, sid)
         except ApiError:
             us = None  # Understat indisponible : on se rabat sur Sofascore
-        df = self._understat_team_matches(us) if us else self._sofascore_team_matches(ut, sid, progress)
+        if us:
+            df = self._understat_team_matches(us)
+        else:
+            try:
+                df = self._sofascore_team_matches(ut, sid, progress)
+            except ApiError:
+                espn = self._espn_team_matches(ut, sid)
+                if espn is None:
+                    raise
+                df = espn
         if df.empty:
             return df
+        source = df.attrs.get("source")
         df = df.sort_values(["date", "team"]).reset_index(drop=True)
         df["result"] = np.select([df["gf"] > df["ga"], df["gf"] == df["ga"]], ["V", "N"], "D")
         df["pts"] = df["result"].map({"V": 3, "N": 1, "D": 0})
         if df["xpts"].isna().all() and df["xg"].notna().any():
             df["xpts"] = [expected_points(x, y) for x, y in zip(df["xg"], df["xga"], strict=True)]
+        if source:
+            df.attrs["source"] = source
         return df
 
     def model_prior(self, ut: int, sid: int) -> dict | None:
@@ -989,7 +1010,16 @@ class FootData:
         return pd.DataFrame(rows)
 
     def upcoming_events(self, ut: int, sid: int, limit: int = 20) -> list[dict]:
-        """Prochains matchs (journée en cours puis suivante)."""
+        """Prochains matchs (journée en cours puis suivante) ; calendrier ESPN si Sofascore est indisponible."""
+        try:
+            return self._upcoming_events(ut, sid, limit)
+        except ApiError:
+            events = self._espn_events(ut, sid, ahead=limit)
+            if events is None:
+                raise
+            return [e for e in events if e["status"] == "notstarted"][:limit]
+
+    def _upcoming_events(self, ut: int, sid: int, limit: int) -> list[dict]:
         rounds, current = self.rounds(ut, sid)
         idx = next((i for i, r in enumerate(rounds) if r["round"] == current and not r.get("slug")), 0)
         events = []
@@ -1181,3 +1211,157 @@ class FootData:
         df["Pts/match"] = (df["Pts"] / df["J"].where(df["J"] > 0)).round(2)
         df.attrs["source"] = "Understat"
         return df
+
+    # --- secours ESPN (classement, résultats, calendrier ; ni joueurs ni xG) ---------------------
+    def _espn_season(self, ut: int, sid: int) -> tuple[int, bool]:
+        """(année de début, saison en cours ?) ; Sofascore en panne : sa liste des saisons en cache (même
+        expirée), sinon déduite de la date du jour."""
+        cache_first = getattr(self.client, "cache_first", None)
+        try:
+            with cache_first() if cache_first is not None else nullcontext():
+                start, current = self.season_start(ut, sid), self._is_current_season(ut, sid)
+            if start:
+                return start, current
+        except ApiError:
+            pass
+        today = date.today()
+        calendar = self.espn is not None and self.espn.calendar_year(ut)
+        return (today.year if calendar or today.month >= 7 else today.year - 1), True
+
+    def _espn_links(self, ut: int, sid: int, names: Iterable[str]) -> dict:
+        """Noms ESPN -> team_id Sofascore, d'après le classement Sofascore en cache (aucune requête)."""
+        peek = getattr(self.client, "peek", None)
+        cached = peek(f"{_ut(ut, sid)}/standings/total") if peek is not None else None
+        if not cached:
+            return {}
+        names = set(names)
+        aliases = {ESPN_ALIASES.get(n, n): n for n in names}
+        links = link_team_ids(aliases, self._parse_standings(cached))
+        return {aliases[name]: tid for name, tid in links.items()}
+
+    def _espn_standings(self, ut: int, sid: int) -> pd.DataFrame | None:
+        if self.espn is None or not self.espn.supports(ut):
+            return None
+        start, current = self._espn_season(ut, sid)
+        try:
+            data = self.espn.standings(ut, None if current else start, past=not current)
+        except ApiError:
+            return None
+        rows = []
+        for group in data.get("children") or []:
+            entries = (group.get("standings") or {}).get("entries") or []
+            if (group.get("standings") or {}).get("season") not in (None, start):
+                return None  # saison différente de celle demandée
+            for e in entries:
+                st = {s.get("name"): s.get("value") for s in e.get("stats") or []}
+
+                def num(key: str, stats: dict = st) -> int | None:
+                    value = stats.get(key)
+                    return int(value) if isinstance(value, (int, float)) else None
+
+                rows.append({"Groupe": group.get("name", ""), "Pos": num("rank"),
+                             "Équipe": (e.get("team") or {}).get("displayName", ""),
+                             "J": num("gamesPlayed"), "G": num("wins"), "N": num("ties"), "P": num("losses"),
+                             "BP": num("pointsFor"), "BC": num("pointsAgainst"), "Diff": num("pointDifferential"),
+                             "Pts": num("points"), "Qualification": (e.get("note") or {}).get("description", "")})
+        if not rows:
+            return None
+        df = pd.DataFrame(rows).sort_values(["Groupe", "Pos"], kind="stable").reset_index(drop=True)
+        df["Pts/match"] = (df["Pts"] / df["J"].where(df["J"] > 0)).astype(float).round(2)
+        links = self._espn_links(ut, sid, df["Équipe"])
+        df["team_id"] = [links.get(name) for name in df["Équipe"]]
+        if df["Groupe"].nunique() <= 1:
+            df = df.drop(columns="Groupe")
+        df.attrs["source"] = "ESPN"
+        return df
+
+    def _espn_events(self, ut: int, sid: int, ahead: int = 0) -> list[dict] | None:
+        """Matchs ESPN de la saison (même format que round_events, identifiants négatifs : pas des id
+        Sofascore). Une requête par année civile ; `ahead` > 0 : l'année suivante est demandée si le calendrier
+        de l'année en cours ne contient pas assez de matchs à venir. None si ESPN est indisponible."""
+        if self.espn is None or not self.espn.supports(ut):
+            return None
+        start, _ = self._espn_season(ut, sid)
+        this_year = date.today().year
+        years = [start] if self.espn.calendar_year(ut) else [start, start + 1]
+        raw: list[dict] = []
+        try:
+            for year in years:
+                if year > this_year:
+                    pending = sum(1 for e in raw if (e.get("status") or {}).get("type", {}).get("state") == "pre")
+                    if year > this_year + 1 or pending >= ahead:
+                        break
+                raw += [e for e in self.espn.scoreboard(ut, year).get("events") or []
+                        if (e.get("season") or {}).get("year") == start]
+        except ApiError:
+            return None
+        names = {(c.get("team") or {}).get("displayName", "")
+                 for e in raw for c in (e.get("competitions") or [{}])[0].get("competitors") or []}
+        links = self._espn_links(ut, sid, names)
+        events = [ev for e in raw if (ev := _espn_event(e, links)) is not None]
+        events.sort(key=lambda e: e["date"])
+        return events
+
+    def _espn_team_matches(self, ut: int, sid: int) -> pd.DataFrame | None:
+        events = self._espn_events(ut, sid)
+        if events is None:
+            return None
+        rows = []
+        for e in events:
+            if e["status"] != "finished" or e["home_score"] is None or e["away_score"] is None:
+                continue
+            for side, other in (("home", "away"), ("away", "home")):
+                rows.append({
+                    "date": e["date"], "team": e[side], "opponent": e[other],
+                    "venue": "Dom." if side == "home" else "Ext.",
+                    "gf": e[f"{side}_score"], "ga": e[f"{other}_score"], "xg": np.nan, "xga": np.nan,
+                    "npxg": np.nan, "npxga": np.nan, "xpts": np.nan,
+                    "ppda_att": np.nan, "ppda_def": np.nan, "oppda_att": np.nan, "oppda_def": np.nan,
+                    "deep": np.nan, "deep_allowed": np.nan, "source": "ESPN",
+                })
+        df = pd.DataFrame(rows)
+        df.attrs["source"] = "ESPN"
+        return df
+
+
+# Noms ESPN -> noms proches de ceux de Sofascore, quand l'appariement approché se tromperait
+ESPN_ALIASES = {"LAFC": "Los Angeles FC", "Red Bull New York": "New York Red Bulls"}
+_ESPN_STATUS = {"STATUS_POSTPONED": "postponed", "STATUS_CANCELED": "canceled", "STATUS_ABANDONED": "canceled"}
+
+
+def _espn_event(e: dict, links: dict) -> dict | None:
+    """Match ESPN -> dictionnaire au format de FootData.round_events ; None si incomplet."""
+    competitors = (e.get("competitions") or [{}])[0].get("competitors") or []
+    sides = {c.get("homeAway"): c for c in competitors}
+    if "home" not in sides or "away" not in sides:
+        return None
+    status = (e.get("status") or {}).get("type") or {}
+    state = status.get("state")
+    if state == "pre":
+        kind = "notstarted"
+    elif state == "in":
+        kind = "inprogress"
+    elif status.get("completed"):
+        kind = "finished"
+    else:
+        kind = _ESPN_STATUS.get(status.get("name", ""), "postponed")
+    try:
+        kickoff = datetime.fromisoformat(str(e.get("date", "")).replace("Z", "+00:00")).astimezone()
+        event_id = -int(e["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    def score(side: str) -> int | None:
+        value = sides[side].get("score")
+        if kind == "notstarted" or value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    home, away = (str((sides[s].get("team") or {}).get("displayName", "")) for s in ("home", "away"))
+    return {"id": event_id, "date": kickoff.replace(tzinfo=None),
+            "home": home, "home_id": links.get(home), "away": away, "away_id": links.get(away),
+            "home_score": score("home"), "away_score": score("away"),
+            "status": kind, "status_label": status.get("description", ""), "source": "ESPN"}

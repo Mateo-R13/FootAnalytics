@@ -108,6 +108,11 @@ class SofascoreClient:
                 return None, False
         return None, False
 
+    def peek(self, path: str) -> Any:
+        """Donnée en cache de `path`, même expirée, sans aucune requête (None si absente)."""
+        cached, _ = self._read_cache(path, None)
+        return cached.get("data") if isinstance(cached, dict) else None
+
     def clear_temporary_cache(self) -> None:
         temp = self.cache_dir / "temp"
         shutil.rmtree(temp, ignore_errors=True)
@@ -117,7 +122,7 @@ class SofascoreClient:
         return sum(f.stat().st_size for f in self.cache_dir.rglob("*") if f.is_file()) / 1e6
 
     def clear_all_cache(self) -> None:
-        for sub in ("temp", "permanent", "images", "understat"):
+        for sub in ("temp", "permanent", "images", "understat", "espn"):
             shutil.rmtree(self.cache_dir / sub, ignore_errors=True)
         (self.cache_dir / "temp").mkdir(parents=True, exist_ok=True)
         (self.cache_dir / "permanent").mkdir(parents=True, exist_ok=True)

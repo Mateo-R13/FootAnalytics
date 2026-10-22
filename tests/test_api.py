@@ -9,7 +9,8 @@ import time
 import pytest
 
 from footapp import logs, updates
-from footapp.api import sofascore, understat
+from footapp.api import espn, sofascore, understat
+from footapp.api.espn import EspnClient
 from footapp.api.sofascore import ApiError, SofascoreClient
 from footapp.api.understat import UnderstatClient
 from footapp.data import FootData
@@ -87,6 +88,10 @@ def test_footdata_cache_first_sur_toutes_les_sources(tmp_path):
     with data.cache_first():
         assert data.client._local.cache_first and data.understat._local.cache_first
     assert not data.client._local.cache_first and not data.understat._local.cache_first
+    data = FootData(SofascoreClient(tmp_path), None, EspnClient(tmp_path))
+    with data.cache_first():
+        assert data.espn._local.cache_first
+    assert not data.espn._local.cache_first
     with FootData(SofascoreClient(tmp_path)).cache_first():  # sans Understat
         pass
 
@@ -191,6 +196,51 @@ def test_understat_cache_illisible(tmp_path):
 
 def test_understat_ligues_connues():
     assert set(understat.LEAGUES) == {34, 17, 8, 23, 35}
+
+
+# --- ESPN (secours réduit) ---------------------------------------------------
+TABLE = {"children": [{"name": "Ligue 2", "standings": {"season": 2026, "entries": []}}]}
+
+
+def _espn(tmp_path, *responses):
+    client = EspnClient(tmp_path)
+    client._session = _Session(*responses)
+    return client
+
+
+def test_espn_cache_et_repli(tmp_path):
+    client = _espn(tmp_path, _Response(payload=TABLE), _Response(status=500), OSError("hors ligne"),
+                   _Response(payload={"events": []}))
+    assert EspnClient.supports(182) and EspnClient.supports(34) and not EspnClient.supports(999)
+    assert EspnClient.calendar_year(242) and not EspnClient.calendar_year(182)
+    assert client.standings(182) == TABLE
+    assert client.standings(182) == TABLE  # cache frais (1 h)
+    assert client._session.urls == ["https://site.api.espn.com/apis/v2/sports/soccer/fra.2/standings"]
+    for f in client.cache_dir.iterdir():
+        os.utime(f, (time.time() - 7200, time.time() - 7200))
+    assert client.standings(182) == TABLE  # expiré + HTTP 500 : repli sur le cache
+    assert client.standings(182) == TABLE  # expiré + réseau coupé : idem
+    with client.cache_first():
+        assert client.standings(182) == TABLE
+    assert len(client._session.urls) == 3
+    assert client.scoreboard(182, 2020) == {"events": []}
+    assert client.scoreboard(182, 2020) == {"events": []}  # année passée : définitive
+    assert client._session.urls[-1].endswith("/fra.2/scoreboard?dates=2020&limit=1000")
+    assert len(client._session.urls) == 4
+
+
+@pytest.mark.parametrize(("response", "message"), [
+    (_Response(status=400), "HTTP 400"),
+    (_Response(payload=["inattendu"]), "inattendue"),
+    (OSError("hors ligne"), "connexion"),
+])
+def test_espn_erreurs_sans_cache(tmp_path, response, message):
+    with pytest.raises(ApiError, match=message):
+        _espn(tmp_path, response).standings(182, 2025, past=True)
+
+
+def test_espn_ligues_connues():
+    assert set(understat.LEAGUES) < set(espn.LEAGUES)  # 5 grands championnats : en dernier recours
 
 
 # --- mises à jour, journal ---------------------------------------------------

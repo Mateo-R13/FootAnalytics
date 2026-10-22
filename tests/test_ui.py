@@ -380,3 +380,33 @@ def test_recherche_globale(qapp, window):
     assert palette.results.count() == 0
     palette._choose()  # rien de sélectionné : sans effet
     assert not crashes and not errors, (crashes, errors)
+
+
+def test_secours_espn(qapp, recorded):
+    """Sofascore et Understat indisponibles : classement, résultats et calendrier ESPN, sans plantage."""
+    from footapp.data import FootData
+    from footapp.ui.main_window import MainWindow
+    from footapp.ui.settings import open_settings
+    from tests.conftest import FailingClient, ReplayEspn
+
+    open_settings().setValue("page", "standings")
+    crashes = []
+    previous_hook = sys.excepthook
+    sys.excepthook = lambda *exc: crashes.append(exc)
+    w = MainWindow(data=FootData(FailingClient(recorded["responses"]), None, ReplayEspn(recorded["espn"])),
+                   check_updates=False)
+    notices = []
+    w.state.notice.connect(notices.append)
+    try:
+        w.show()
+        wait_idle(qapp, w)
+        assert w.state.standings.attrs.get("source") == "ESPN"
+        for key in ("standings", "teams", "predictions", "prematch"):
+            w.show_page(key)
+            wait_idle(qapp, w)
+        assert w.state.team_matches.attrs.get("source") == "ESPN"
+        assert any("ESPN" in n for n in notices)
+        assert not crashes, crashes
+    finally:
+        w.close()
+        sys.excepthook = previous_hook

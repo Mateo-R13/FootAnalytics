@@ -2,11 +2,13 @@
 import gzip
 import json
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from footapp.api.espn import EspnClient
 from footapp.api.sofascore import ApiError
 from footapp.api.understat import UnderstatClient
 from footapp.data import FootData
@@ -34,6 +36,9 @@ class ReplayClient:
 
     def get_image(self, path, ttl=0):
         return None
+
+    def peek(self, path):
+        return self.responses.get(path)
 
 
 class LenientReplayClient(ReplayClient):
@@ -71,6 +76,24 @@ class ReplayUnderstat:
         return self.responses[key]
 
 
+class ReplayEspn(EspnClient):
+    """Remplace EspnClient : mêmes adresses, réponses enregistrées par record_fixtures.py --espn. Une année
+    civile non enregistrée (tests lancés plus tard) ne contient aucun match."""
+
+    def __init__(self, responses: dict):
+        self.responses = responses
+        self.requested: list[str] = []
+        self._local = threading.local()
+
+    def _get(self, path, ttl):
+        self.requested.append(path)
+        if path in self.responses:
+            return self.responses[path]
+        if "/scoreboard?" in path:
+            return {"events": []}
+        raise ApiError(f"ESPN non enregistré : {path}")
+
+
 class FailingClient(ReplayClient):
     """Sofascore indisponible : toute requête hors saisons échoue (pour tester le secours Understat)."""
 
@@ -100,6 +123,12 @@ def data_sofascore_only(recorded):
 @pytest.fixture
 def data_offline_sofascore(recorded):
     return FootData(FailingClient(recorded["responses"]), ReplayUnderstat(recorded["understat"]))
+
+
+@pytest.fixture
+def data_espn(recorded):
+    """Sofascore et Understat indisponibles : secours ESPN (classement, résultats, calendrier)."""
+    return FootData(FailingClient(recorded["responses"]), None, ReplayEspn(recorded["espn"]))
 
 
 @pytest.fixture

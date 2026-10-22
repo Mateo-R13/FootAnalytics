@@ -163,3 +163,89 @@ def test_comparaison_de_versions():
     assert is_newer("2.10.0", "2.9.3")
     assert not is_newer("2.2.0", "2.2.0")
     assert not is_newer("v1.9", "2.0.0")
+
+
+# --- secours ESPN (Sofascore et Understat indisponibles) ------------------------------------
+def test_secours_espn_classement(data_espn, meta):
+    standings = data_espn.standings(meta["ut"], meta["sid"])
+    assert standings.attrs.get("source") == "ESPN"
+    assert standings["Pos"].tolist() == list(range(1, len(standings) + 1))
+    assert (standings["J"] == standings["G"] + standings["N"] + standings["P"]).all()
+    assert (standings["Diff"] == standings["BP"] - standings["BC"]).all()
+    # équipes reliées aux identifiants Sofascore grâce au classement en cache (aucune requête)
+    assert standings["team_id"].notna().mean() > 0.8
+    assert standings["team_id"].dropna().is_unique
+
+
+def test_secours_espn_matchs_et_calendrier(data_espn, meta):
+    tm = data_espn.team_matches(meta["ut"], meta["sid"])
+    assert tm.attrs.get("source") == "ESPN" and len(tm) and len(tm) % 2 == 0
+    assert tm["xg"].isna().all() and tm["xpts"].isna().all()  # buts seulement
+    assert (tm["source"] == "ESPN").all() and set(tm["result"]) <= {"V", "N", "D"}
+    assert tm["gf"].sum() == tm["ga"].sum()
+    events = data_espn.upcoming_events(meta["ut"], meta["sid"])
+    assert all(e["status"] == "notstarted" and e["id"] < 0 and e["home_score"] is None for e in events)
+    assert [e["date"] for e in events] == sorted(e["date"] for e in events)
+    # une seule requête par année civile, saison filtrée (une saison s'étale sur deux années)
+    assert all("scoreboard?dates=" in p or p.endswith("/standings") for p in data_espn.espn.requested)
+
+
+def test_espn_jamais_sollicite_si_sofascore_repond(recorded, meta):
+    from footapp.data import FootData
+    from tests.conftest import ReplayClient, ReplayEspn, ReplayUnderstat
+    espn = ReplayEspn(recorded["espn"])
+    data = FootData(ReplayClient(recorded["responses"]), ReplayUnderstat(recorded["understat"]), espn)
+    data.standings(meta["ut"], meta["sid"])
+    data.team_matches(meta["ut"], meta["sid"])
+    data.upcoming_events(meta["ut"], meta["sid"])
+    assert espn.requested == []
+
+
+def test_secours_espn_indisponible(recorded, meta):
+    from footapp.api.sofascore import ApiError
+    from footapp.data import FootData
+    from tests.conftest import FailingClient, ReplayEspn
+    data = FootData(FailingClient(recorded["responses"]), None, ReplayEspn({}))
+    with pytest.raises(ApiError, match="Sofascore"):  # l'erreur d'origine est signalée
+        data.standings(meta["ut"], meta["sid"])
+    assert FootData(FailingClient(recorded["responses"]))._espn_team_matches(meta["ut"], meta["sid"]) is None
+
+
+def test_espn_alias_et_statuts():
+    from footapp.data import ESPN_ALIASES, _espn_event
+    standings = pd.DataFrame({"Équipe": ["Los Angeles FC", "LA Galaxy", "New York Red Bulls", "New York City FC"],
+                              "team_id": [1, 2, 3, 4]})
+    names = ["LAFC", "LA Galaxy", "Red Bull New York", "New York City FC"]
+    links = link_team_ids([ESPN_ALIASES.get(n, n) for n in names], standings)
+    assert [links[ESPN_ALIASES.get(n, n)] for n in names] == [1, 2, 3, 4]
+
+    def event(state, name="STATUS_FULL_TIME", completed=True, score="2"):
+        return {"id": "7", "date": "2026-10-17T19:00Z", "status": {"type": {"state": state, "name": name,
+                                                                            "completed": completed}},
+                "competitions": [{"competitors": [
+                    {"homeAway": "home", "score": score, "team": {"displayName": "LAFC"}},
+                    {"homeAway": "away", "score": "0", "team": {"displayName": "LA Galaxy"}}]}]}
+
+    done = _espn_event(event("post"), {"LAFC": 1})
+    assert done["status"] == "finished" and (done["home_score"], done["away_score"]) == (2, 0)
+    assert done["id"] == -7 and done["home_id"] == 1 and done["away_id"] is None
+    assert _espn_event(event("pre", score="0"), {})["home_score"] is None
+    assert _espn_event(event("in"), {})["status"] == "inprogress"
+    assert _espn_event(event("post", "STATUS_POSTPONED", False), {})["status"] == "postponed"
+    assert _espn_event(event("post", score="?"), {})["home_score"] is None
+    assert _espn_event({"id": "x", "date": "?"}, {}) is None
+
+
+def test_espn_saison_deduite_sans_sofascore():
+    from datetime import date
+
+    from footapp.api.sofascore import ApiError
+    from footapp.data import FootData
+
+    class Down:
+        def get(self, *a, **k):
+            raise ApiError("hors ligne")
+
+    start, current = FootData(Down())._espn_season(34, 1)
+    today = date.today()
+    assert current and start == (today.year if today.month >= 7 else today.year - 1)

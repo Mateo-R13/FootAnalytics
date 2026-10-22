@@ -151,7 +151,8 @@ class HelpPage(Page):
             f"<b style='color:{theme.INK}'>Sofascore</b> "
             "(non officielle). xG par match, xPts et PPDA des 5 grands championnats : <b style='color:"
             f"{theme.INK}'>Understat</b>, qui sert aussi de secours si Sofascore est indisponible. "
-            "Usage personnel uniquement.</p>"
+            f"En dernier recours : <b style='color:{theme.INK}'>ESPN</b> (résultats, classement et calendrier "
+            "uniquement, sans xG ni fiches joueurs). Usage personnel uniquement.</p>"
             f"<p style='color:{theme.INK2}'>Cache : matchs terminés conservés définitivement, le reste de 15 min à "
             "12 h. « Actualiser » (en haut) vide le cache temporaire.</p>"
             f"<p style='color:{theme.MUTED}'>{CACHE_DIR}</p>")

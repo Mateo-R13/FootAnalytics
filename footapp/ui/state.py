@@ -140,9 +140,13 @@ class AppState(QObject):
         self._notify_source(df, "statistiques joueurs")
 
     def _notify_source(self, df, what):
-        if df.attrs.get("source") == "Understat":
+        source = df.attrs.get("source")
+        if source == "Understat":
             self.notice.emit(f"Sofascore est indisponible : {what} issues de la source de secours Understat "
                              "(métriques limitées, fiches joueurs indisponibles).")
+        elif source == "ESPN":
+            self.notice.emit(f"Sofascore est indisponible ({what}) : source de secours ESPN "
+                             "(résultats et classement uniquement, sans xG ni fiches joueurs).")
 
     # --- données chargées à la demande -------------------------------------------
     def request_team_matches(self):
@@ -166,6 +170,7 @@ class AppState(QObject):
                 return
             self.team_matches, self.team_prior = result
             self.team_matches_changed.emit(self.team_matches)
+            self._notify_source(self.team_matches, "résultats des matchs")
 
         def failed(message):
             self._loading.discard("team_matches")

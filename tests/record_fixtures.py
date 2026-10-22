@@ -5,6 +5,7 @@ Usage (depuis la racine du projet) :
     .venv\\Scripts\\python.exe -m tests.record_fixtures --squads   (ajoute seulement les effectifs)
     .venv\\Scripts\\python.exe -m tests.record_fixtures --history  (ajoute seulement l'historique d'une équipe)
     .venv\\Scripts\\python.exe -m tests.record_fixtures --prematch (ajoute seulement l'avant-match d'un match à venir)
+    .venv\\Scripts\\python.exe -m tests.record_fixtures --espn     (ajoute seulement le secours ESPN)
 
 Rejoue un scénario représentatif (Ligue 1 : classement, joueurs, un match, un joueur, tirs et heatmap de la
 saison de deux joueurs, matchs de la saison des deux sources, prochains matchs, effectifs, historique sur 5 saisons
@@ -17,7 +18,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from footapp.api.sofascore import SofascoreClient
+from footapp.api.espn import EspnClient
+from footapp.api.sofascore import ApiError, SofascoreClient
 from footapp.api.understat import UnderstatClient
 from footapp.data import FootData
 
@@ -91,6 +93,7 @@ def main():
                        "understat": _slim_understat(understat.recorded, meta)}, f)
         print(f"{len(client.recorded)} réponses Sofascore + {len(understat.recorded)} Understat -> {FIXTURE} "
               f"({FIXTURE.stat().st_size / 1024:.0f} Ko)")
+    add_espn()  # secours ESPN de la même saison
 
 
 def _record_history(client, understat, team_id):
@@ -179,8 +182,77 @@ def add_prematch():
           f"({FIXTURE.stat().st_size / 1024:.0f} Ko)")
 
 
+class RecordingEspn(EspnClient):
+    def __init__(self, cache_dir):
+        super().__init__(cache_dir)
+        self.recorded = {}
+
+    def _get(self, path, ttl):
+        data = super()._get(path, 0)
+        self.recorded[path] = slim_espn(data)
+        return data
+
+
+class _Offline(_Replay):
+    """Sofascore en panne, sauf la liste des saisons et le classement déjà en cache (appariement des équipes)."""
+
+    def get(self, path, ttl=3600, permanent=False, slim=None):
+        if path.endswith("/seasons"):
+            return self.responses[path]
+        raise ApiError("Sofascore indisponible (enregistrement ESPN)")
+
+    def peek(self, path):
+        return self.responses.get(path)
+
+
+def slim_espn(data: dict) -> dict:
+    """Ne garde des réponses ESPN que les champs lus par FootData (bien plus léger)."""
+    if "children" in data:
+        return {"children": [{
+            "name": g.get("name"),
+            "standings": {"season": (g.get("standings") or {}).get("season"), "entries": [{
+                "team": {"displayName": (e.get("team") or {}).get("displayName")},
+                "note": {"description": (e.get("note") or {}).get("description")} if e.get("note") else None,
+                "stats": [{"name": s.get("name"), "value": s.get("value")} for s in e.get("stats") or []],
+            } for e in (g.get("standings") or {}).get("entries") or []]},
+        } for g in data.get("children") or []]}
+    events = []
+    for e in data.get("events") or []:
+        st = (e.get("status") or {}).get("type") or {}
+        competitors = (e.get("competitions") or [{}])[0].get("competitors") or []
+        events.append({
+            "id": e.get("id"), "date": e.get("date"), "season": {"year": (e.get("season") or {}).get("year")},
+            "status": {"type": {k: st.get(k) for k in ("name", "state", "completed", "description")}},
+            "competitions": [{"competitors": [{"homeAway": c.get("homeAway"), "score": c.get("score"),
+                                               "team": {"displayName": (c.get("team") or {}).get("displayName")}}
+                                              for c in competitors]}],
+        })
+    return {"events": events}
+
+
+def add_espn():
+    """Ajoute les réponses ESPN de la compétition enregistrée (classement, matchs de la saison et de l'année
+    suivante), allégées, Sofascore étant simulé en panne ; rien d'autre n'est réenregistré."""
+    with gzip.open(FIXTURE, "rt", encoding="utf-8") as f:
+        saved = json.load(f)
+    meta = saved["meta"]
+    with tempfile.TemporaryDirectory() as tmp:
+        espn = RecordingEspn(Path(tmp))
+        data = FootData(_Offline(saved["responses"]), None, espn)
+        data.standings(meta["ut"], meta["sid"])
+        data.team_matches(meta["ut"], meta["sid"])
+        data.upcoming_events(meta["ut"], meta["sid"])
+        espn.scoreboard(meta["ut"], meta["season_start"] + 1)
+    saved["espn"] = espn.recorded
+    with gzip.open(FIXTURE, "wt", encoding="utf-8") as f:
+        json.dump(saved, f)
+    print(f"{len(espn.recorded)} réponses ESPN -> {FIXTURE} ({FIXTURE.stat().st_size / 1024:.0f} Ko)")
+
+
 if __name__ == "__main__":
-    if "--prematch" in sys.argv:
+    if "--espn" in sys.argv:
+        add_espn()
+    elif "--prematch" in sys.argv:
         add_prematch()
     elif "--squads" in sys.argv:
         add_squads()

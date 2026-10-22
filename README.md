@@ -124,7 +124,10 @@ $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # 
 
 Sources : API JSON publique utilisée par le site sofascore.com (non officielle, sans clé), interrogée via
 `curl_cffi` qui imite un navigateur ; **Understat** pour les xG par match, xPts et PPDA des 5 grands championnats,
-et comme source de secours si Sofascore est indisponible.
+et comme source de secours si Sofascore est indisponible ; **ESPN** (API JSON non officielle, sans clé) en dernier
+recours, seulement après un échec des autres sources : classement, résultats et calendrier uniquement (ni xG ni
+fiches joueurs) pour la Ligue 2, le Championship, l'Eredivisie, la Liga Portugal, la MLS, le Brasileirão, la Ligue
+des champions, la Ligue Europa et les 5 grands championnats.
 
 - **Usage personnel / expérimental uniquement** : l'API n'est pas documentée et ses conditions
   n'autorisent pas un usage commercial.
@@ -143,6 +146,7 @@ footapp/
   config.py                   compétitions, catalogue des métriques et libellés
   api/sofascore.py            client HTTP + cache disque (JSON et images)
   api/understat.py            client Understat (xG par match, xPts, PPDA, secours)
+  api/espn.py                 client ESPN (secours réduit : classement, résultats, calendrier)
   data.py                     appels API -> DataFrames pandas (+ métriques dérivées)
   analysis.py                 par 90 min, centiles, profils similaires, recherche, Poisson (xPts, pronostics),
                               valeur vs performance (régression robuste de Huber), profils types (k-means, ACP)

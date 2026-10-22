@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import updates
+from ..api.espn import EspnClient
 from ..api.sofascore import SofascoreClient
 from ..api.understat import UnderstatClient
 from ..config import APP_NAME, APP_VERSION, CACHE_DIR, COMPETITIONS, POSITIONS, resource_path
@@ -73,7 +74,7 @@ class MainWindow(QMainWindow):
 
         # sources de données injectables (tests : réponses enregistrées, sans réseau)
         if data is None:
-            data = FootData(SofascoreClient(CACHE_DIR), UnderstatClient(CACHE_DIR))
+            data = FootData(SofascoreClient(CACHE_DIR), UnderstatClient(CACHE_DIR), EspnClient(CACHE_DIR))
         self.runner = TaskRunner(self)
         self.state = AppState(data, self.runner, ImageStore(data.client, self), self)
 
