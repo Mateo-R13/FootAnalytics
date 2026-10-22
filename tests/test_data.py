@@ -14,7 +14,16 @@ from footapp.config import (
     POSITIONS,
     SHOT_OUTCOMES,
 )
-from footapp.data import SQUAD_FIELDS, FootData, _season_start, _slim_squad
+from footapp.data import (
+    SQUAD_FIELDS,
+    FootData,
+    _goals,
+    _person,
+    _result,
+    _season_start,
+    _slim_squad,
+    link_team_ids,
+)
 
 
 def test_saisons(data, meta):
@@ -375,3 +384,25 @@ def test_profils_types_donnees_enregistrees(data, meta):
             assert rows.empty
     again = player_roles(players)
     assert roles.table[["player_id", "role"]].equals(again.table[["player_id", "role"]])
+
+
+def test_resultat_et_score_d_un_camp():
+    assert [_result(None, None, w, True) for w in (1, 2, 3)] == ["V", "D", "N"]
+    assert [_result(None, None, w, False) for w in (1, 2, 3)] == ["D", "V", "N"]
+    # sans winnerCode (match en cours…) : d'après le score, vide s'il manque
+    assert [_result(2, 1, None, True), _result(1, 1, None, True), _result(0, 3, None, True)] == ["V", "N", "D"]
+    assert _result(None, 1, None, True) == ""
+    assert _goals(None) is None and _goals({"current": 2}) == 2 and _goals({"display": 0, "current": 3}) == 0
+
+
+def test_nom_dans_un_incident():
+    assert _person("Mbappé") == "Mbappé" and _person({"name": "Dembélé"}) == "Dembélé"
+    assert _person(None) == "" and _person({"id": 3}) == "" and _person(12) == ""
+
+
+def test_appariement_des_noms_d_equipes():
+    standings = pd.DataFrame({"Équipe": ["Paris Saint-Germain", "Olympique de Marseille", "Stade Rennais FC", "Lens"],
+                              "team_id": [1, 2, 3, np.nan]})
+    links = link_team_ids(["Paris Saint Germain", "Marseille", "Rennes", "Inconnu FC", "Marseille"], standings)
+    assert links == {"Paris Saint Germain": 1, "Marseille": 2, "Rennes": 3}  # un identifiant par équipe au plus
+    assert link_team_ids(["Lens"], pd.DataFrame()) == {}

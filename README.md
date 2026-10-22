@@ -75,7 +75,9 @@ L'icône se régénère avec `python tools\make_icon.py`.
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt   # dépendances + outils (versions figées)
 .\.venv\Scripts\python.exe -m ruff check .              # qualité du code (configuration : pyproject.toml)
+.\.venv\Scripts\python.exe -m mypy                      # vérification des types (configuration : pyproject.toml)
 .\.venv\Scripts\python.exe -m pytest -q                 # tests hors ligne, interface comprise
+.\.venv\Scripts\python.exe -m pytest -q --cov=footapp   # idem + couverture (lignes manquantes, plancher 85 %)
 $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # contre la vraie API
 .\.venv\Scripts\python.exe -m tests.record_fixtures      # ré-enregistrer les réponses de référence
 .\.venv\Scripts\python.exe -m tests.record_fixtures --history   # n'ajouter que l'historique d'une équipe
@@ -88,8 +90,14 @@ $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # 
 - **Tests** : réponses API réelles enregistrées (aucun réseau). Ils vérifient que chaque métrique demandée est
   toujours renseignée (si Sofascore renomme un champ, le test indique lequel), que le modèle de pronostic ne
   « connaît » pas l'avenir, et que chaque page de l'interface s'ouvre sans erreur (Qt sans fenêtre visible).
-- **Intégration continue** (GitHub Actions) : ruff, pip-audit, tests, puis construction de l'installeur ;
-  sur un tag, vérification que le tag correspond à la version de l'application avant publication.
+  Les clients HTTP sont testés avec des sessions factices (codes HTTP, empreintes refusées, cache, repli hors
+  ligne). Couverture ≈ 90 % (tâches de fond comprises) ; `pytest --cov` échoue sous 85 %.
+- **Types** : mypy vérifie tout le code ; le cœur (`analysis`, `data`, `api`, `config`, `logs`, `updates`) est
+  entièrement annoté. Côté interface, énumérations Qt en nom complet (`Qt.AlignmentFlag.AlignLeft`) et
+  `widgets.named()` pour nommer un widget ; ne jamais donner à un attribut le nom d'une méthode Qt (`event`,
+  `metric`, `palette`, `actions`…) : PySide6 prendrait l'attribut pour une surcharge de la méthode virtuelle.
+- **Intégration continue** (GitHub Actions) : ruff, mypy, pip-audit, tests avec couverture, puis construction de
+  l'installeur ; sur un tag, vérification que le tag correspond à la version de l'application avant publication.
 - **Journal** : `%LOCALAPPDATA%\FootAnalytics\logs\footanalytics.log` (erreurs avec leur trace complète),
   accessible depuis Aide & paramètres.
 
@@ -151,7 +159,7 @@ footapp/
     report.py                 rapports PDF
     palette.py                recherche globale Ctrl+K
     pages/                    une page par section
-tests/                        tests pytest (données, analyse, interface, sécurité) + réponses API enregistrées
+tests/                        tests pytest (données, analyse, clients HTTP, interface, sécurité) + réponses API enregistrées
 ```
 
 **Ajouter une compétition** : `(nom, id)` dans `COMPETITIONS` (l'id figure dans l'URL Sofascore du tournoi).

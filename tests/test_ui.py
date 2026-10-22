@@ -7,6 +7,9 @@ import sys
 import time
 
 import pytest
+from PySide6.QtCore import Qt
+
+from footapp.ui.palette import MAX_RESULTS
 
 
 def wait_idle(app, window, timeout: float = 30.0):
@@ -337,4 +340,43 @@ def test_profil_type_fiche_et_recherche(qapp, window):
     wait_idle(qapp, w)
     shown = scouting.table.model_.dataframe()
     assert shown.empty or (shown["Profil type"] == classified["role"]).all()
+    assert not crashes and not errors, (crashes, errors)
+
+
+def test_recherche_globale(qapp, window):
+    """Ctrl+K : filtre par mots (tous requis, sans casse) puis ouvre la page, l'équipe ou le joueur choisi."""
+    w, errors, crashes = window
+    wait_idle(qapp, w)
+    palette = w.command_palette
+    palette.popup()
+    kinds = {palette.results.item(i).data(Qt.ItemDataRole.UserRole)[0] for i in range(palette.results.count())}
+    assert kinds == {"page", "team", "player"}
+    assert palette.results.count() <= MAX_RESULTS
+
+    palette.search.setText("CLASSEMENT")
+    assert palette.results.count() == 1
+    palette._choose()
+    assert w.stack.currentWidget() is w.page("standings") and not palette.isVisible()
+
+    team = w.state.standings["Équipe"].iloc[0]
+    palette.popup()
+    palette.search.setText(f"{team} équipe")
+    assert palette.results.currentItem().data(Qt.ItemDataRole.UserRole) == ("team", team)
+    palette._choose()
+    wait_idle(qapp, w)
+    assert w.stack.currentWidget() is w.page("teams")
+
+    player = w.state.players.sort_values("minutesPlayed").iloc[-1]
+    palette.popup()
+    palette.search.setText(player["player"])
+    kind, value = palette.results.currentItem().data(Qt.ItemDataRole.UserRole)
+    assert kind == "player" and value == int(player["player_id"])
+    palette._choose()
+    wait_idle(qapp, w)
+    assert w.stack.currentWidget() is w.page("profile")
+
+    palette.popup()
+    palette.search.setText("aucun résultat possible zzz")
+    assert palette.results.count() == 0
+    palette._choose()  # rien de sélectionné : sans effet
     assert not crashes and not errors, (crashes, errors)

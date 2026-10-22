@@ -34,3 +34,15 @@ ignore_missing_imports = true
 module = ["footapp.analysis", "footapp.api.*", "footapp.updates", "footapp.config", "footapp.logs", "footapp.data"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+
+[tool.coverage.run]
+source = ["footapp"]
+# sys.monitoring (Python 3.12) : suit aussi les fils créés par Qt (QThreadPool des tâches de fond),
+# que le traceur classique ne voit pas
+core = "sysmon"
+
+[tool.coverage.report]
+# plancher : `pytest --cov=footapp` échoue si la couverture du code passe en dessous
+fail_under = 85
+show_missing = true
+skip_covered = true

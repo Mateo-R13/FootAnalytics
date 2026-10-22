@@ -33,6 +33,9 @@ jobs:
       - name: Vérifier la qualité du code (ruff)
         run: ruff check .
 
+      - name: Vérifier les types (mypy)
+        run: mypy
+
       - name: Vérifier les failles connues des dépendances
         run: pip-audit -r requirements.lock
 
@@ -43,8 +46,8 @@ jobs:
           version=$(python -c "from footapp.config import APP_VERSION; print(APP_VERSION)")
           test "v$version" = "${GITHUB_REF_NAME}" || { echo "Tag ${GITHUB_REF_NAME} ≠ version v$version"; exit 1; }
 
-      - name: Lancer les tests (données enregistrées, sans réseau, interface comprise)
-        run: python -m pytest -q
+      - name: Lancer les tests et mesurer la couverture (données enregistrées, sans réseau, interface comprise)
+        run: python -m pytest -q --cov=footapp --cov-report=term-missing
         env:
           QT_QPA_PLATFORM: offscreen
 
