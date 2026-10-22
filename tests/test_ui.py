@@ -65,3 +65,17 @@ def test_ouverture_d_une_fiche_joueur(qapp, window, meta):
     assert profile.player_id == meta["player_id"]
     assert profile.name.text()  # identité affichée
     assert not crashes and not errors, (crashes, errors)
+
+
+def test_heatmap_orientation(qapp):
+    """Sofascore : y vers la gauche de l'équipe ; sens du jeu vers la droite -> gauche en haut."""
+    import numpy as np
+    import pandas as pd
+
+    from footapp.ui import charts
+    from footapp.ui.widgets import ChartWidget
+
+    chart = ChartWidget()
+    charts.heatmap(chart, pd.DataFrame({"x": [50.0] * 30, "y": [90.0] * 30}), "test")
+    density = np.asarray(chart.figure.axes[0].collections[0].get_array()).reshape(20, 30)  # (y, x)
+    assert density[10:].sum() > 0.9 * density.sum()  # densité dans la moitié haute

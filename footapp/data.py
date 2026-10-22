@@ -490,14 +490,18 @@ class FootData:
             c = s.get("playerCoordinates") or {}
             rows.append({
                 "player": s["player"]["name"], "is_home": s.get("isHome"), "type": s.get("shotType"),
-                "situation": s.get("situation"), "body": s.get("bodyPart"), "xg": s.get("xg") or 0.0,
-                "xgot": s.get("xgot"), "minute": s.get("time"), "added": s.get("addedTime"),
+                "situation": s.get("situation"), "body": s.get("bodyPart"),
+                "xg": s.get("xg"), "xgot": s.get("xgot"),  # absents (Ligue 2…) -> NaN, jamais 0
+                "minute": s.get("time"), "added": s.get("addedTime"),
                 # instant du tir en minutes décimales (temps additionnel inclus)
                 "t": s["timeSeconds"] / 60 if s.get("timeSeconds") is not None
                 else (s.get("time") or 0) + (s.get("addedTime") or 0),
                 "x": c.get("x"), "y": c.get("y"),
             })
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df[["xg", "xgot"]] = df[["xg", "xgot"]].apply(pd.to_numeric, errors="coerce")
+        return df
 
     @staticmethod
     def _avg_positions(data) -> dict:

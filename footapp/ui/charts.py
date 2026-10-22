@@ -4,6 +4,7 @@ import pandas as pd
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from ..config import SHOT_BODY_PARTS, SHOT_OUTCOMES, SHOT_SITUATIONS
 from . import pitch, theme
 from .widgets import ChartWidget
 
@@ -246,6 +247,9 @@ def cumulative_xg(chart: ChartWidget, shots: pd.DataFrame, home: str, away: str)
     fig = chart.clear()
     if shots.empty:
         return chart.message("Pas de données de tirs pour ce match")
+    if shots["xg"].isna().all():
+        return chart.message("xG indisponibles pour cette compétition")
+    shots = shots.assign(xg=shots["xg"].fillna(0))
     ax = fig.add_subplot()
     end = max(95, float(shots["t"].max()) + 2)
     for is_home, color, team in ((True, theme.HOME, home), (False, theme.AWAY, away)):
@@ -425,21 +429,22 @@ def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, hom
     gs = fig.add_gridspec(2, 1, height_ratios=[3, 1.1])
     ax = fig.add_subplot(gs[0])
     _draw_pitch(ax)
+    has_xg = shots["xg"].notna().any()
     summary = []
     for is_home, color, team in ((True, theme.HOME, home), (False, theme.AWAY, away)):
         d = shots[shots["is_home"] == is_home]
         goals = d[d["type"] == "goal"]
-        summary.append(f"{team} : {len(d)} tirs · {len(goals)} buts · {d['xg'].sum():.2f} xG")
+        summary.append(f"{team} : {len(d)} tirs · {len(goals)} buts · {_xg_text(d['xg'].sum(min_count=1))} xG")
         for subset, filled in ((d[d["type"] != "goal"], False), (goals, True)):
             if subset.empty:
                 continue
             x, y = _shot_xy(subset, is_home)
-            pts = ax.scatter(x, y, s=40 + subset["xg"] * 900, zorder=3,
+            pts = ax.scatter(x, y, s=_shot_size(subset["xg"], 40, 900, has_xg), zorder=3,
                              facecolor=color if filled else "none", edgecolor=theme.SURFACE if filled else color,
                              linewidth=1.5, alpha=0.95 if filled else 0.85)
             chart.add_hover(ax, pts, [
                 f"{r.player} - {r.minute}'" + (f"+{int(r.added)}" if pd.notna(r.added) and r.added else "")
-                + f"\n{_shot_label(r.type)} · xG {r.xg:.2f}\n{r.situation or ''} · {r.body or ''}"
+                + f"\n{_shot_label(r.type)} · xG {_xg_text(r.xg)}\n{_situation(r.situation)} · {_body(r.body)}"
                 for r in subset.itertuples()])
     marker = {"marker": "o", "ls": "", "markersize": 9}
     ax.legend(handles=[
@@ -448,7 +453,8 @@ def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, hom
         Patch(color=theme.HOME, label=home), Patch(color=theme.AWAY, label=away),
     ], loc="upper center", bbox_to_anchor=(0.5, 0.02), ncol=4, fontsize=8.5)
     ax.set_title("     |     ".join(summary), fontsize=9.5, color=theme.INK)
-    ax.text(0.5, 1.08, "Taille du point = xG du tir · survolez pour le détail", transform=ax.transAxes,
+    size_note = "Taille du point = xG du tir" if has_xg else "xG indisponibles pour cette compétition"
+    ax.text(0.5, 1.08, f"{size_note} · survolez pour le détail", transform=ax.transAxes,
             ha="center", fontsize=8, color=theme.MUTED)
 
     ax2 = fig.add_subplot(gs[1])
@@ -469,20 +475,39 @@ def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, hom
 
 
 def _shot_label(t):
-    return {"goal": "But", "save": "Arrêté", "miss": "Non cadré", "block": "Contré", "post": "Poteau"}.get(t, t)
+    return SHOT_OUTCOMES.get(t, t)
 
 
-def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str):
+def _situation(v) -> str:
+    return SHOT_SITUATIONS.get(v, v or "")
+
+
+def _body(v) -> str:
+    return SHOT_BODY_PARTS.get(v, v or "")
+
+
+def _xg_text(v) -> str:
+    return "-" if v is None or pd.isna(v) else f"{v:.2f}"
+
+
+def _shot_size(xg: pd.Series, base: float, scale: float, has_xg: bool):
+    """Taille des points proportionnelle à l'xG ; constante quand la compétition n'a pas d'xG."""
+    return base + scale * xg.fillna(0) if has_xg else base + scale * 0.1
+
+
+def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str, subtitle: str | None = None):
+    """Densité des positions. Sofascore : x vers le but adverse, y vers la GAUCHE de l'équipe. Sens du jeu
+    vers la droite, la gauche de l'équipe est en haut : y se trace tel quel (et non 100 - y)."""
     fig = chart.clear()
     if points.empty:
         return chart.message("Pas de heatmap disponible pour ce joueur")
     ax = fig.add_subplot()
     _draw_pitch(ax, line_zorder=2)  # lignes au-dessus de la densité
-    pitch.heatmap(ax, points["x"], 100 - points["y"], cmap=theme.SEQ_CMAP, zorder=1)
+    pitch.heatmap(ax, points["x"], points["y"], cmap=theme.SEQ_CMAP, zorder=1)
     ax.annotate("", xy=(62, -4), xytext=(38, -4), annotation_clip=False,
                 arrowprops={"arrowstyle": "->", "color": theme.MUTED, "lw": 1})
     ax.text(50, -8, "Sens du jeu", ha="center", fontsize=8, color=theme.MUTED)
-    _title(ax, title, f"{len(points)} actions localisées")
+    _title(ax, title, subtitle or f"{len(points)} actions localisées")
     chart.draw()
 
 
@@ -497,10 +522,11 @@ def average_positions(chart: ChartWidget, positions: dict, home: str, away: str)
         if df.empty:
             continue
         size = 250 + 900 * df["touches"] / max(df["touches"].max(), 1)
-        pts = ax.scatter(df["x"], 100 - df["y"], s=size, color=color, edgecolor=theme.SURFACE,
+        # y vers la gauche de l'équipe : tracé tel quel (sens du jeu vers la droite, gauche en haut)
+        pts = ax.scatter(df["x"], df["y"], s=size, color=color, edgecolor=theme.SURFACE,
                          linewidth=2, zorder=3)
         for r in df.itertuples():
-            ax.text(r.x, 100 - r.y, r.number, ha="center", va="center", fontsize=8, color=theme.INK,
+            ax.text(r.x, r.y, r.number, ha="center", va="center", fontsize=8, color=theme.INK,
                     weight="bold", zorder=4)
         chart.add_hover(ax, pts, [f"{r.name} (n°{r.number})\n{r.touches} actions" for r in df.itertuples()])
         ax.set_title(team, fontsize=10, color=theme.INK)

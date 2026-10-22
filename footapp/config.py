@@ -353,6 +353,15 @@ MATCH_STAT_LABELS = {
     "goalKicks": "Six mètres",
 }
 
+# Tirs (cartes des tirs) : libellés français des valeurs Sofascore
+SHOT_OUTCOMES = {"goal": "But", "save": "Arrêté", "blocked-off-line": "Sauvé sur la ligne", "post": "Poteau",
+                 "miss": "Non cadré", "block": "Contré"}
+SHOT_ON_TARGET = ("goal", "save", "blocked-off-line")
+SHOT_SITUATIONS = {"assisted": "Action (passe)", "regular": "Action (individuelle)", "fast-break": "Contre-attaque",
+                   "corner": "Corner", "free-kick": "Coup franc direct", "set-piece": "Coup de pied arrêté",
+                   "throw-in-set-piece": "Touche", "penalty": "Penalty"}
+SHOT_BODY_PARTS = {"right-foot": "Pied droit", "left-foot": "Pied gauche", "head": "Tête", "other": "Autre"}
+
 MATCH_PERIODS = {"ALL": "Match complet", "1ST": "1re mi-temps", "2ND": "2e mi-temps"}
 
 MATCH_STATUS = {"Ended": "Terminé", "Not started": "À venir", "AP": "Après prolongation",

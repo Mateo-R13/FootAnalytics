@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from footapp.config import ALL_PLAYER_METRICS, ALL_TEAM_METRICS, LINEUP_BASE, LINEUP_GROUPS, PLAYER_METRICS, POSITIONS
-from footapp.data import _season_start
+from footapp.data import FootData, _season_start
 
 
 def test_saisons(data, meta):
@@ -58,6 +58,13 @@ def test_heatmap(data, meta, recorded):
     pid = int(path.split("/player/")[1].split("/")[0])
     pts = data.heatmap(meta["event"], pid)
     assert not pts.empty and pts[["x", "y"]].stack().between(0, 100).all()
+
+
+def test_xg_absent_reste_nan():
+    """Compétition sans xG (Ligue 2…) : NaN, jamais 0."""
+    shots = FootData._shots({"shotmap": [{"player": {"name": "A"}, "isHome": True, "shotType": "miss", "time": 10,
+                                          "playerCoordinates": {"x": 10, "y": 50}}]})
+    assert shots["xg"].isna().all() and shots["xgot"].isna().all()
 
 
 def test_fiche_joueur(data, meta):
