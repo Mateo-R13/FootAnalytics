@@ -44,6 +44,13 @@ GLOSSARY = [
      "Pour les métriques « négatives » (ballons perdus, fautes…), l'échelle est inversée."),
     ("Similarité", "100 - écart moyen de centiles sur le profil du poste : 90 % = en moyenne 10 centiles d'écart "
      "par métrique."),
+    ("Profil type", "Fiche joueur et Recherche avancée : regroupement statistique (k-means) des joueurs d'un même "
+                    "poste selon leur style (taux par 90 min et parts : touches, centres, dribbles, tirs, duels "
+                    "aériens…), pas un poste officiel. Le nom du groupe (« Latéral offensif », « Pivot "
+                    "récupérateur »…) est déduit automatiquement de ses caractéristiques moyennes. Joueurs de champ "
+                    "ayant joué au moins 270 min (25 % du temps de jeu maximal en saison avancée) ; le nombre de "
+                    "groupes est réduit tant que le regroupement n'est pas stable (d'où 2 ou 3 groupes en début "
+                    "de saison). Carte : analyse en composantes principales (2 axes)."),
     ("Indice personnalisé", "Moyenne pondérée de centiles (calculés au sein de chaque poste), de 0 à 100."),
     ("Valeur estimée", "Valeur marchande estimée par Sofascore (pas un prix de transfert), avec l'âge et la fin de "
      "contrat issus des effectifs actuels : disponibles pour la saison en cours uniquement."),

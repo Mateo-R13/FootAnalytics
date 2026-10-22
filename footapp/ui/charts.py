@@ -95,6 +95,41 @@ def _plain(text) -> str:
     return str(text).replace("$", r"\$")
 
 
+def role_map(chart: ChartWidget, table: pd.DataFrame, names: list[str], player_id, axis_labels: tuple[str, str],
+             title: str, subtitle: str):
+    """Carte des profils types d'un poste : 2 premiers axes de l'ACP, une couleur par groupe (ordre fixe),
+    joueur `player_id` mis en évidence. table : sortie de analysis.player_roles pour ce poste."""
+    fig = chart.clear()
+    if table.empty:
+        return chart.message("Aucun profil type pour ce poste")
+    ax = fig.add_subplot()
+    palette = theme.CATEGORICAL
+    me = (table["player_id"] == player_id).to_numpy()
+    others = table[~me]
+    colors = [palette[int(g) % len(palette)] for g in others["group"]]
+    pts = ax.scatter(others["pc1"], others["pc2"], s=34, c=colors, alpha=0.85, edgecolor=theme.SURFACE,
+                     linewidth=0.8, zorder=2)
+    chart.add_hover(ax, pts, [f"{_plain(r.player)} ({_plain(r.team)})\n{names[int(r.group)]}"
+                              for r in others.itertuples()])
+    if me.any():
+        r = table[me].iloc[0]
+        ax.scatter([r["pc1"]], [r["pc2"]], s=190, color=palette[int(r["group"]) % len(palette)], edgecolor=theme.INK,
+                   linewidth=2, zorder=4)
+        ax.annotate(_plain(r["player"]), (r["pc1"], r["pc2"]), xytext=(9, 7), textcoords="offset points",
+                    fontsize=9, fontweight="bold", color=theme.INK, zorder=5)
+    counts = table["group"].value_counts()
+    handles = [Line2D([], [], ls="", marker="o", color=palette[j % len(palette)],
+                      label=f"{name} ({int(counts.get(j, 0))})") for j, name in enumerate(names)]
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=min(3, len(names)), fontsize=8)
+    ax.axhline(0, lw=1, color=theme.AXIS, zorder=1)
+    ax.axvline(0, lw=1, color=theme.AXIS, zorder=1)
+    ax.set_xlabel(axis_labels[0], fontsize=8.5)
+    ax.set_ylabel(axis_labels[1], fontsize=8.5)
+    ax.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)
+    _title(ax, title, subtitle)
+    chart.draw()
+
+
 def value_scatter(chart: ChartWidget, df: pd.DataFrame, score_label: str, title: str, subtitle: str,
                   curve: tuple | None = None, n_top: int = 6, n_bottom: int = 3):
     """Valeur estimée (M€, échelle log) vs score. df : player, team, value, score, expected, z.

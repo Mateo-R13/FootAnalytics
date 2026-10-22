@@ -21,6 +21,7 @@ MODES = {
         "HOME": "#3987e5", "AWAY": "#d95926", "THIRD": "#199e70",
         "DIV_HIGH": "#3987e5", "DIV_MID": "#5b6275", "DIV_LOW": "#e66767",
         "GOOD_TEXT": "#4ade80", "BAD_TEXT": "#f87171",
+        "CATEGORICAL": ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"],
         "SEQ": ["#171a23", "#104281", "#1c5cab", "#2a78d6", "#5598e7", "#9ec5f4"],
     },
     "light": {
@@ -31,6 +32,7 @@ MODES = {
         "HOME": "#2a78d6", "AWAY": "#eb6834", "THIRD": "#1baf7a",
         "DIV_HIGH": "#2a78d6", "DIV_MID": "#a3a9b5", "DIV_LOW": "#e34948",
         "GOOD_TEXT": "#15803d", "BAD_TEXT": "#b91c1c",
+        "CATEGORICAL": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"],
         "SEQ": ["#ffffff", "#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"],
     },
 }
@@ -62,13 +64,14 @@ TOKENS = ("BG", "SIDEBAR", "SIDEBAR_TOP", "CARD", "CARD_HOVER", "CONTROL", "BORD
  BAD_TEXT) = (MODES["dark"][name] for name in TOKENS)
 SURFACE = CARD
 SERIES = [HOME, AWAY, THIRD]
+CATEGORICAL = MODES["dark"]["CATEGORICAL"]  # groupes (profils types), ordre fixe
 SEQ_CMAP = LinearSegmentedColormap.from_list("seq_blue", MODES["dark"]["SEQ"])
 MODE = "dark"
 
 
 def configure(mode: str) -> None:
     """Fixe les jetons de couleur du mode choisi (à appeler avant de créer les fenêtres)."""
-    global MODE, SURFACE, SERIES, SEQ_CMAP
+    global MODE, SURFACE, SERIES, CATEGORICAL, SEQ_CMAP
     MODE = mode if mode in MODES else "dark"
     tokens = MODES[MODE]
     module = globals()
@@ -76,6 +79,7 @@ def configure(mode: str) -> None:
         module[name] = tokens[name]
     SURFACE = tokens["CARD"]
     SERIES = [tokens["HOME"], tokens["AWAY"], tokens["THIRD"]]
+    CATEGORICAL = tokens["CATEGORICAL"]
     SEQ_CMAP = LinearSegmentedColormap.from_list("seq_blue", tokens["SEQ"])
 
 

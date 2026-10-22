@@ -5,13 +5,14 @@ from dataclasses import dataclass
 import pandas as pd
 from PySide6.QtCore import QObject, Qt, Signal
 
+from ..analysis import player_roles
 from ..api.understat import LEAGUES as BIG5
 from ..config import COMPETITIONS
 from ..data import link_team_ids
 from .settings import open_settings
 
 # Données partagées auxquelles les pages s'abonnent (Page.bind), dans l'ordre où elles s'appliquent
-DATA_KEYS = ("context", "standings", "players", "team_matches", "big5", "profiles")
+DATA_KEYS = ("context", "standings", "players", "team_matches", "big5", "profiles", "roles")
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class AppState(QObject):
     team_matches_changed = Signal(object)  # DataFrame équipe x match (chargé à la demande)
     big5_changed = Signal(object)          # DataFrame joueurs des 5 grands championnats
     profiles_changed = Signal(object)      # DataFrame valeurs / âges / contrats (chargé à la demande)
+    roles_changed = Signal(object)         # {référentiel: Roles} profils types calculés (à la demande)
     watchlist_changed = Signal()
     open_player = Signal(int)              # demande d'ouverture de la fiche joueur
     open_prematch = Signal(object)         # demande d'ouverture de l'avant-match (ligne de upcoming_events)
@@ -56,12 +58,14 @@ class AppState(QObject):
         self._loaded = set()  # données disponibles pour le contexte courant
         self._fresh = set()   # données déjà mises à jour depuis le réseau pour le contexte courant
         self._scaled = {}
+        self.roles = {}  # référentiel -> (pool, Roles) : profils types, calculés à la demande
+        self._roles_pending = {}  # référentiel -> pool en cours de calcul
 
     # --- accès générique (pages) -------------------------------------------------
     def signal(self, key: str):
         return {"context": self.context_changed, "standings": self.standings_changed,
                 "players": self.players_changed, "team_matches": self.team_matches_changed,
-                "big5": self.big5_changed, "profiles": self.profiles_changed}[key]
+                "big5": self.big5_changed, "profiles": self.profiles_changed, "roles": self.roles_changed}[key]
 
     def snapshot(self) -> dict:
         """Données déjà disponibles, dans l'ordre DATA_KEYS (pour une page créée après leur chargement)."""
@@ -72,6 +76,7 @@ class AppState(QObject):
             "team_matches": (self.team_matches is not None, self.team_matches),
             "big5": (self.big5 is not None, self.big5),
             "profiles": (self.profiles is not None, self.profiles),
+            "roles": (bool(self.roles), self.roles),
         }
         return {key: available[key][1] for key in DATA_KEYS if available[key][0]}
 
@@ -87,6 +92,7 @@ class AppState(QObject):
         self._profile_teams = set()
         self._profiles_again = False
         self._loading.discard("profiles")
+        self.roles.pop("league", None)
         self._loaded.clear()
         self._fresh.clear()
         self.context_changed.emit(ctx)
@@ -198,6 +204,40 @@ class AppState(QObject):
             self.runner.error.emit(message)
 
         self.runner.run("big5", job, done, failed)
+
+    # --- profils types (regroupement statistique) ----------------------------------------
+    def roles_for(self, scope: str):
+        """Profils types du référentiel s'ils sont calculés pour ses données actuelles (sinon None)."""
+        pool = self.players_pool(scope)
+        cached = self.roles.get(scope)
+        return cached[1] if cached and pool is not None and cached[0] is pool else None
+
+    def request_roles(self, scope: str = "league"):
+        """Calcule en arrière-plan (k-means + stabilité : ~0,5 à 1 s) les profils types du référentiel ;
+        émet roles_changed. Rien à faire s'ils sont à jour ou en cours de calcul."""
+        pool = self.players_pool(scope)
+        if pool is None or pool.empty:
+            return
+        if self.roles_for(scope) is not None:
+            self.roles_changed.emit(self.roles)
+            return
+        if self._roles_pending.get(scope) is pool:
+            return
+        self._roles_pending[scope] = pool
+
+        def done(roles):
+            if self._roles_pending.get(scope) is pool:
+                del self._roles_pending[scope]
+            if self.players_pool(scope) is pool:  # données changées entre-temps : résultat périmé
+                self.roles[scope] = (pool, roles)
+                self.roles_changed.emit(self.roles)
+
+        def failed(message):
+            if self._roles_pending.get(scope) is pool:
+                del self._roles_pending[scope]
+            self.runner.error.emit(message)
+
+        self.runner.run(f"roles_{scope}", lambda progress: player_roles(pool), done, failed)
 
     # --- valeurs et contrats (effectifs actuels) ----------------------------------------
     def profiles_available(self, scope: str) -> bool:

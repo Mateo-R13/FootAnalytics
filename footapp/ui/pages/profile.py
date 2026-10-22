@@ -21,6 +21,9 @@ from ...analysis import (
     percentiles,
     pooled_shot_quality,
     rank_in,
+    role_axes,
+    role_highlights,
+    role_value,
     season_evolution,
     shot_breakdown,
     shot_summary,
@@ -34,14 +37,18 @@ from ...config import (
     EVOLUTION_MIN_MINUTES,
     POSITION_TEMPLATES,
     POSITIONS,
+    ROLE_FEATURES,
+    ROLE_MIN_MINUTES,
+    ROLE_MIN_PLAYERS,
 )
 from ...data import FootData
-from .. import charts, report
+from .. import charts, report, theme
 from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, rounded_pixmap, table_card, tool_button
 from . import Page, scope_combo
 from .players import metric_combo
 
 # métriques proposées dans l'onglet Évolution (ni volume de jeu, ni physique : suivi partiel avant 25/26)
+PLURALS = {"D": "défenseurs", "M": "milieux", "F": "attaquants"}
 EVOLUTION_METRICS = {k: v for k, v in ALL_PLAYER_METRICS.items() if v[2] != "info" and v[1] != "Physique"}
 
 
@@ -83,7 +90,7 @@ class ProfilePage(Page):
     key = "profile"
     title = "Fiche joueur"
     subtitle = ("Identité, profil en centiles par rapport aux joueurs du même poste, forme match par match, "
-                "tirs et heatmap de la saison, évolution d'une saison à l'autre, stats complètes")
+                "tirs et heatmap de la saison, profil type, évolution d'une saison à l'autre, stats complètes")
     icon_name = "fa5s.id-card"
 
     def __init__(self, state):
@@ -133,6 +140,17 @@ class ProfilePage(Page):
         ident.body.addWidget(self.photo, 0, Qt.AlignHCenter)
         ident.body.addWidget(self.name, 0, Qt.AlignHCenter)
         ident.body.addLayout(team_row)
+        # profil type : pastille (regroupement statistique, détail dans l'onglet « Profil type »)
+        self.role_badge = QLabel()
+        self.role_badge.setTextFormat(Qt.PlainText)
+        self.role_badge.setAlignment(Qt.AlignCenter)
+        self.role_badge.setWordWrap(True)
+        self.role_badge.setStyleSheet(f"background: {theme.rgba(self.accent, 0.16)}; color: {theme.INK}; "
+                                      f"border: 1px solid {theme.rgba(self.accent, 0.45)}; border-radius: 11px; "
+                                      "padding: 4px 10px; font-weight: 600;")
+        self.role_badge.setToolTip("Profil type : regroupement statistique des joueurs du même poste selon leur "
+                                   "style de jeu (k-means), pas un poste officiel. Détail : onglet « Profil type ».")
+        ident.body.addWidget(self.role_badge)
         ident.body.addLayout(self.facts)
 
         self.kpis = {k: KpiTile(label, color) for k, label, color in [
@@ -234,11 +252,25 @@ class ProfilePage(Page):
         self._shots_done = None   # ... dont le résultat est affiché
         self._shots = None
 
+        # profil type : carte ACP du poste + explications (calcul partagé, en arrière-plan)
+        self.role_chart = ChartWidget()
+        self.role_text = QLabel()
+        self.role_text.setTextFormat(Qt.PlainText)  # noms de joueurs venus de l'API
+        self.role_text.setWordWrap(True)
+        self.role_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        role_card = Card("Profil type", "regroupement statistique, pas un poste officiel")
+        role_card.add(self.role_text, 1)
+        role_split = QSplitter(Qt.Horizontal)
+        role_split.addWidget(chart_card(self.role_chart))
+        role_split.addWidget(role_card)
+        role_split.setSizes([680, 380])
+
         self.tabs = QTabWidget()
         self.tabs.addTab(chart_card(self.pct_chart), "Profil (centiles)")
         self.tabs.addTab(form, "Forme match par match")
         self.tabs.addTab(self.shots_tab, "Tirs && heatmap")  # && : « & » littéral (pas de raccourci)
         self.tabs.addTab(similar, "Profils similaires")
+        self.tabs.addTab(role_split, "Profil type")
         self.tabs.addTab(career, "Évolution && carrière")
         self.tabs.addTab(table_card(self.all_table, "Toutes les statistiques",
                                     "total, par 90 min, centile et rang au poste"), "Toutes les stats")
@@ -265,6 +297,7 @@ class ProfilePage(Page):
         self.evo_reliable.valueChanged.connect(self._draw_evolution)
         self.bind("context", lambda ctx: self.pct_chart.message("Chargement…"))
         self.bind("players", self._on_players)
+        self.bind("roles", lambda roles: self._fill_role())
         state.images.loaded.connect(self._refresh_images)
         state.images.loaded.connect(lambda *_: self.similar_table.model_.refresh_icons())
 
@@ -351,6 +384,7 @@ class ProfilePage(Page):
                                f"≥ {self.min_minutes.value()} min · valeurs par 90 min (hors %)")
         self._fill_all_stats(p, pool, pool90, me)
         self._fill_similar()
+        self._fill_role()
         self._career_for = None
         self._maybe_load_career()
         self._maybe_load_shots()
@@ -433,6 +467,74 @@ class ProfilePage(Page):
         charts.radar(self.similar_radar, [ALL_PLAYER_METRICS[k][0] for k in keys], series,
                      f"Similarité : {rec['Similarité %']:.0f} %",
                      f"Centiles au poste · {self.ctx.label} · par 90 min (hors %)")
+
+    def _set_role(self, badge: str, message: str):
+        self.role_badge.setText(badge)
+        self.role_chart.message(message)
+        self.role_text.setText(message)
+
+    def _fill_role(self):
+        p = self._row()
+        if p is None:
+            return
+        if p.pos == "G":
+            return self._set_role("Profil type : -", "Pas de profil type pour les gardiens (joueurs de champ "
+                                                     "uniquement).")
+        roles = self.state.roles_for("league")
+        if roles is None:
+            self.state.request_roles("league")
+            return self._set_role("Profil type : calcul…", "Calcul des profils types…")
+        info, row = roles.groups.get(p.pos, {}), roles.of(int(p.player_id))
+        poste = PLURALS[p.pos]
+        if info.get("status") == "small":
+            return self._set_role("Profil type : échantillon insuffisant",
+                                  f"Pas de profil type : seulement {info.get('n', 0)} {poste} ont joué au moins "
+                                  f"{roles.min_minutes} min ({ROLE_MIN_PLAYERS} nécessaires). Revenez après quelques "
+                                  "journées.")
+        if info.get("status") == "missing":
+            return self._set_role("Profil type : indisponible", "Pas de profil type : les métriques de style ne "
+                                                                "sont pas fournies par la source de données actuelle.")
+        if info.get("status") == "unstable":
+            return self._set_role("Profil type : regroupement instable",
+                                  f"Pas de profil type : les {poste} ne se répartissent pas en groupes stables "
+                                  "(les groupes changent trop d'un tirage à l'autre pour être interprétés).")
+        if row is None:
+            return self._set_role(f"Profil type : moins de {roles.min_minutes} min",
+                                  f"Pas de profil type : {p.player} a joué {int(p.minutesPlayed or 0)} min, moins "
+                                  f"que les {roles.min_minutes} min exigées (les taux par 90 min d'un petit temps de "
+                                  "jeu sont trop instables).")
+        self.role_badge.setText(f"Profil type : {row['role']}")
+        table = roles.table[roles.table["pos"] == p.pos]
+        charts.role_map(self.role_chart, table, info["names"], int(p.player_id), role_axes(info),
+                        f"{p.player} : {row['role']}",
+                        f"{len(table)} {poste} ≥ {roles.min_minutes} min · {self.ctx.label} · ACP des métriques "
+                        f"de style ({100 * sum(info['explained']):.0f} % de la variance)")
+        self.role_text.setText(self._role_explanation(p, roles, info, row, table, poste))
+
+    @staticmethod
+    def _role_explanation(p, roles, info, row, table, poste) -> str:
+        def described(key, z):
+            return f"{'plus' if z > 0 else 'moins'} : {ROLE_FEATURES[key][1]} ({z:+.1f} écart-type)"
+
+        center = info["centers"].loc[row["role"]].sort_values()
+        traits = [described(k, z) for k, z in center[::-1].items() if z >= 0.3][:3]
+        traits += [described(k, z) for k, z in center.items() if z <= -0.3][:2]
+        lines = [f"{row['role']} : {int((table['role'] == row['role']).sum())} {poste} sur {len(table)}.", "",
+                 "Le groupe, par rapport à la moyenne du poste :"]
+        lines += [f"  • {t}" for t in traits] or ["  • proche de la moyenne"]
+        lines += ["", f"Ce qui distingue {p.player} au sein du poste :"]
+        lines += [f"  • {ROLE_FEATURES[k][0]} : {role_value(k, v)} ({z:+.1f} écart-type)"
+                  for k, v, z in role_highlights(roles, int(p.player_id))]
+        lines += ["", f"Méthode : k-means en {info['k']} groupes sur {len(info['features'])} métriques de style "
+                      f"(taux par 90 min et parts, standardisés), {poste} ayant joué au moins {roles.min_minutes} "
+                      "min. Nom attribué automatiquement d'après les caractéristiques moyennes du groupe : un "
+                      "regroupement statistique, pas un poste officiel.",
+                  f"Stabilité : {info['stability']:.2f} (indice de Rand ajusté en rééchantillonnant 80 % des "
+                  "joueurs ; 1 = groupes identiques)."]
+        if roles.min_minutes <= ROLE_MIN_MINUTES and info["k"] <= 3:
+            lines += ["", "Début de saison : petits échantillons, d'où peu de groupes (un découpage plus fin ne "
+                          "serait pas stable). Les profils s'affinent au fil des journées."]
+        return "\n".join(lines)
 
     def _maybe_load_career(self, *_):
         p = self._row()
@@ -606,7 +708,7 @@ class ProfilePage(Page):
         figures = [report.cover(p.player, f"{p.team} · {POSITIONS[p.pos]} · {self.ctx.label}", self._facts, kpis,
                                 report.pixmap_to_array(photo))]
         for chart in (self.pct_chart, self.form_chart, self.shot_chart, self.season_heat_chart, self.similar_radar,
-                      self.career_chart):
+                      self.career_chart, self.role_chart):
             if chart.figure.axes:
                 figures.append(chart.figure)
         if not self.similar_table.model_.dataframe().empty:

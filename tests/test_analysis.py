@@ -4,12 +4,18 @@ import pandas as pd
 import pytest
 
 from footapp.analysis import (
+    adjusted_rand,
     composite_index,
     huber_fit,
+    kmeans,
+    pca_2d,
     per90,
     percentiles,
+    player_roles,
     pooled_shot_quality,
     rank_in,
+    role_highlights,
+    role_names,
     scout,
     season_evolution,
     shot_breakdown,
@@ -18,7 +24,14 @@ from footapp.analysis import (
     value_model,
     weighted_mean,
 )
-from footapp.config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITION_TEMPLATES
+from footapp.config import (
+    ALL_PLAYER_METRICS,
+    INDEX_PRESETS,
+    POSITION_TEMPLATES,
+    ROLE_FEATURES,
+    ROLE_GROUP_FEATURES,
+    ROLE_TABLE,
+)
 from footapp.data import competition_kind
 
 
@@ -433,3 +446,93 @@ def test_bilan_sans_fuite_d_information_future():
     assert s["n"] == len(bt) and s["brier_diff_ci"][0] <= s["brier_diff"] <= s["brier_diff_ci"][1]
     assert s["calibration"]["n"].sum() == s["calibration_old"]["n"].sum() == 3 * len(bt)
     assert backtest_summary(pd.DataFrame()) == {}
+
+
+# --- profils types ---------------------------------------------------------------------------------
+def role_pool(n_per_group=30, seed=0, minutes=900):
+    """Joueurs fictifs : défenseurs en 2 styles nets (stoppeurs / latéraux) + milieux et attaquants sans structure."""
+    rng = np.random.default_rng(seed)
+    columns = sorted({c for _, _, num, den in ROLE_FEATURES.values() for c in (*num, *(den or ()))})
+    rows = []
+    for pos, styles in (("D", ("stoppeur", "latéral")), ("M", ("x",)), ("F", ("x",))):
+        for style in styles:
+            for i in range(n_per_group if pos == "D" else 25):
+                row = {c: float(rng.poisson(20)) for c in columns}
+                if style == "stoppeur":
+                    row.update(clearances=float(rng.poisson(60)), aerialDuelsWon=float(rng.poisson(30)), totalCross=0.0)
+                elif style == "latéral":
+                    row.update(clearances=float(rng.poisson(8)), aerialDuelsWon=float(rng.poisson(5)),
+                               totalCross=float(rng.poisson(40)), keyPasses=float(rng.poisson(25)))
+                rows.append({**row, "player_id": len(rows) + 1, "player": f"{style}{i}", "team": "X", "team_id": 1,
+                             "pos": pos, "minutesPlayed": minutes, "npxg": float(rng.gamma(2, 1))})
+    return pd.DataFrame(rows)
+
+
+def test_kmeans_deterministe_et_ari():
+    X = np.r_[np.random.default_rng(1).normal(0, .3, (20, 2)), np.random.default_rng(2).normal(5, .3, (20, 2))]
+    a, ca = kmeans(X, 2, seed=3)
+    b, cb = kmeans(X, 2, seed=3)
+    assert (a == b).all() and np.allclose(ca, cb)
+    assert adjusted_rand(a, np.r_[np.zeros(20), np.ones(20)]) == pytest.approx(1.0)
+    assert adjusted_rand([0, 0, 1, 1], [1, 1, 0, 0]) == pytest.approx(1.0)  # numéros de groupe sans importance
+    assert abs(adjusted_rand(np.arange(40) % 2, np.arange(40) // 20)) < 0.1
+
+
+def test_acp_axes():
+    rng = np.random.default_rng(0)
+    t = rng.normal(size=200)
+    X = np.c_[t, t + rng.normal(0, .1, 200), rng.normal(0, .1, 200)]
+    coords, explained, axes = pca_2d(X)
+    assert coords.shape == (200, 2) and explained[0] > 0.9 and explained.sum() <= 1 + 1e-9
+    assert axes[0, np.abs(axes[0]).argmax()] > 0  # signe fixé : carte reproductible
+
+
+def test_profils_types_retrouve_les_styles_et_reste_deterministe():
+    pool = role_pool()
+    roles = player_roles(pool, seed=0)
+    again = player_roles(pool.sample(frac=1, random_state=4), seed=0)  # ordre des lignes sans effet
+    d = roles.table[roles.table["pos"] == "D"]
+    assert roles.groups["D"]["status"] == "ok" and roles.groups["D"]["k"] >= 2
+    truth = d["player"].str.startswith("stoppeur")
+    # les deux styles ne sont jamais mélangés (un style peut être scindé si k > 2)
+    assert (truth.groupby(d["group"]).nunique() == 1).all()
+    assert not set(d.loc[truth, "role"]) & set(d.loc[~truth, "role"])
+    merged = roles.table.merge(again.table, on="player_id")
+    assert (merged["role_x"] == merged["role_y"]).all()
+    assert "G" not in roles.groups and not (roles.table["pos"] == "G").any()
+    for info in roles.groups.values():
+        assert len(set(info["names"])) == len(info["names"])  # noms uniques au sein du poste
+    # le groupe des stoppeurs se distingue par ses dégagements ou ses duels aériens
+    center = roles.groups["D"]["centers"].loc[d.loc[truth, "role"].iloc[0]]
+    assert center.idxmax() in ("clear", "aerial")
+    tops = role_highlights(roles, int(d.loc[truth, "player_id"].iloc[0]))
+    assert len(tops) == 3 and abs(tops[0][2]) >= abs(tops[1][2]) >= abs(tops[2][2])
+
+
+def test_profils_types_petit_echantillon_et_seuil():
+    pool = role_pool(n_per_group=8)  # 16 défenseurs : trop peu
+    roles = player_roles(pool)
+    assert roles.groups["D"]["status"] == "small" and (roles.table["pos"] != "D").all()
+    # sous le seuil de minutes : pas de profil
+    pool.loc[pool["pos"] == "M", "minutesPlayed"] = 100
+    roles = player_roles(pool, min_minutes=270)
+    assert roles.groups["M"]["n"] == 0 and roles.of(int(pool.loc[pool["pos"] == "M", "player_id"].iloc[0])) is None
+    assert player_roles(pool.drop(columns=["clearances"])).groups["D"]["status"] == "missing"
+    empty = player_roles(pd.DataFrame())
+    assert empty.table.empty and empty.groups == {}
+
+
+def test_profils_types_sans_structure_peu_de_groupes():
+    """Milieux tirés au hasard (aucun style réel) : au plus 3 groupes stables, ou aucun profil."""
+    info = player_roles(role_pool()).groups["M"]
+    assert info["status"] in ("ok", "unstable") and info["k"] <= 3
+
+
+def test_noms_de_roles_uniques_et_secours():
+    keys = ROLE_GROUP_FEATURES["D"]
+    same = np.array([[1.0 if k == "clear" else 0.0 for k in keys]] * 3)  # trois centres identiques
+    assert len(set(role_names(same, keys, "D"))) == 3
+    names = role_names(np.zeros((3, len(keys))), keys, "D")  # aucun rôle ressemblant : noms de secours
+    assert len(set(names)) == 3 and all(n.startswith("Défenseur :") for n in names)
+    for pos, table in ROLE_TABLE.items():
+        assert all(k in ROLE_GROUP_FEATURES[pos] for sig in table.values() for k in sig), pos

@@ -311,3 +311,30 @@ def test_avant_match_fiabilite_reduite(qapp, window, upcoming):
     assert all(t.model_.dataframe().empty for t in page.key_tables.values())
     assert isinstance(page.content["standings"], pd.DataFrame)
     assert not crashes and not errors, (crashes, errors)
+
+
+def test_profil_type_fiche_et_recherche(qapp, window):
+    """Pastille et onglet « Profil type » de la fiche joueur, filtre par profil type de la recherche avancée."""
+    w, errors, crashes = window
+    w.show_page("profile")
+    wait_idle(qapp, w)
+    page = w.page("profile")
+    roles = w.state.roles_for("league")
+    assert roles is not None
+    assert page.role_badge.text().startswith("Profil type")
+    classified = roles.table.iloc[0]
+    page.request_player(int(classified["player_id"]))
+    wait_idle(qapp, w)
+    assert classified["role"] in page.role_badge.text()
+    assert "regroupement statistique" in page.role_text.text()
+    w.show_page("scouting")
+    wait_idle(qapp, w)
+    scouting = w.page("scouting")
+    i = scouting.role.findData(classified["role"])
+    assert i > 0
+    scouting.role.setCurrentIndex(i)
+    scouting.role.activated.emit(i)
+    wait_idle(qapp, w)
+    shown = scouting.table.model_.dataframe()
+    assert shown.empty or (shown["Profil type"] == classified["role"]).all()
+    assert not crashes and not errors, (crashes, errors)

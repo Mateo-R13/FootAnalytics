@@ -69,6 +69,13 @@ class ScoutingPage(Page):
             self.position.addItem(label, code)
         self.min_minutes = QSpinBox(minimum=0, maximum=6000, singleStep=90, value=450, suffix=" min")
         self.filters = ProfileFilters()
+        self.role = QComboBox()
+        self.role.setMinimumWidth(220)
+        self.role.setToolTip("Profil type : regroupement statistique des joueurs d'un même poste selon leur style "
+                             "de jeu (voir la fiche joueur, onglet « Profil type »). Le calcul démarre au premier "
+                             "choix.")
+        self.role.addItem("Tous les profils types", None)
+        self._role_wanted = None  # profil choisi (gardé si la liste est recalculée)
         self.saved = QComboBox()
         self.saved.setMinimumWidth(180)
         save = tool_button("Enregistrer", "fa5s.save")
@@ -85,6 +92,8 @@ class ScoutingPage(Page):
         row.addWidget(QLabel("Profil"))
         row.addWidget(self.filters)
         row.addStretch()
+        row.addWidget(QLabel("Profil type"))
+        row.addWidget(self.role)
         top.body.addLayout(row)
         self.body.addWidget(top)
 
@@ -115,6 +124,7 @@ class ScoutingPage(Page):
         self.position.currentIndexChanged.connect(self.run)
         self.min_minutes.valueChanged.connect(self.run)
         self.filters.changed.connect(self.run)
+        self.role.activated.connect(self._on_role)
         self.filters.load_requested.connect(lambda: self.state.request_profiles(self.scope.currentData()))
         self.saved.activated.connect(self._apply_saved)
         save.clicked.connect(self._save)
@@ -122,6 +132,7 @@ class ScoutingPage(Page):
         self.bind("players", lambda df: self.run())
         self.bind("big5", lambda df: self.run())
         self.bind("profiles", lambda df: self.run())
+        self.bind("roles", lambda roles: self.run())
 
     # --- critères ------------------------------------------------------------------
     def _add_row(self, key="keyPasses", threshold=70):
@@ -146,6 +157,25 @@ class ScoutingPage(Page):
                 row = CriterionRow(self.run, self._remove_row, key, threshold)
                 self.rows.append(row)
                 self.criteria_box.addWidget(row)
+
+    # --- profils types ----------------------------------------------------------------
+    def _on_role(self):
+        self._role_wanted = self.role.currentData()
+        self.run()
+
+    def _fill_roles(self, roles):
+        """Liste des profils types du référentiel (poste par poste), en gardant le choix courant."""
+        self.role.blockSignals(True)
+        self.role.clear()
+        self.role.addItem("Tous les profils types", None)
+        if roles is None and self._role_wanted:
+            self.role.addItem(f"{self._role_wanted} (calcul…)", self._role_wanted)
+        for pos, info in (roles.groups.items() if roles is not None else []):
+            for name in info["names"]:
+                self.role.addItem(name if name.startswith(POSITIONS[pos]) else f"{name} ({POSITIONS[pos].lower()})",
+                                  name)
+        self.role.setCurrentIndex(max(0, self.role.findData(self._role_wanted)))
+        self.role.blockSignals(False)
 
     # --- recherche -----------------------------------------------------------------
     def _on_scope(self):
@@ -172,6 +202,15 @@ class ScoutingPage(Page):
                 self.state.request_profiles(scope)
                 self.status.setText(loading_hint(len(missing)))
             return
+        # profils types : calculés en arrière-plan au premier choix d'un profil (ou déjà disponibles)
+        roles = self.state.roles_for(scope)
+        if roles is None:
+            self.state.request_roles(scope)
+        self._fill_roles(roles)
+        if self._role_wanted and roles is None:
+            self.table.set_dataframe(pd.DataFrame())
+            self.status.setText("Calcul des profils types…")
+            return
         if self.state.profiles is not None and self.state.profiles_available(scope):
             pool = self.state.with_profiles(pool)
         criteria = [r.value() for r in self.rows if r.value()[0]]
@@ -184,6 +223,9 @@ class ScoutingPage(Page):
             found = found[found["pos"] == position]
         if filtering:
             found = self.filters.apply(found)
+        role_of = roles.table.set_index("player_id")["role"] if roles is not None and not roles.table.empty else None
+        if self._role_wanted and not found.empty:
+            found = found[found["player_id"].map(role_of if role_of is not None else {}) == self._role_wanted]
         if found.empty:
             self.table.set_dataframe(pd.DataFrame())
             self.status.setText(f"Aucun joueur ne remplit tous les critères ({len(pool)} joueurs analysés) : "
@@ -195,6 +237,8 @@ class ScoutingPage(Page):
             cols["league"] = "Championnat"
         view = found[list(cols)].rename(columns=cols)
         view.insert(len(cols), "Score", found["score"].round(1))
+        if role_of is not None:
+            view["Profil type"] = found["player_id"].map(role_of).fillna("-")
         view = view.join(profile_columns(found))
         for key in dict.fromkeys(k for k, _ in criteria):
             label, _, kind = ALL_PLAYER_METRICS[key]
@@ -205,7 +249,9 @@ class ScoutingPage(Page):
         self.status.setText(f"{len(found)} joueurs sur {len(pool)} remplissent les {len(criteria)} critères"
                             + (" (200 premiers affichés)" if len(found) > 200 else "")
                             + (" · filtres âge / valeur / contrat appliqués (valeurs estimées Sofascore)"
-                               if filtering else ""))
+                               if filtering else "")
+                            + (f" · profil type « {self._role_wanted} » (regroupement statistique, joueurs ≥ "
+                               f"{roles.min_minutes} min)" if self._role_wanted else ""))
 
     # --- recherches enregistrées ------------------------------------------------------
     def _searches(self) -> dict:
@@ -227,7 +273,7 @@ class ScoutingPage(Page):
         searches = self._searches()
         searches[name.strip()] = {"criteria": [r.value() for r in self.rows], "position": self.position.currentData(),
                                   "min_minutes": self.min_minutes.value(), "scope": self.scope.currentData(),
-                                  "profile_filters": self.filters.settings()}
+                                  "profile_filters": self.filters.settings(), "role": self._role_wanted}
         self.state.settings.setValue("searches", json.dumps(searches))
         self._load_saved_list()
         self.saved.setCurrentIndex(self.saved.findData(name.strip()))
@@ -241,6 +287,7 @@ class ScoutingPage(Page):
         self.min_minutes.setValue(s.get("min_minutes", 450))
         self.scope.setCurrentIndex(max(0, self.scope.findData(s.get("scope", "league"))))
         self.filters.restore(s.get("profile_filters"))
+        self._role_wanted = s.get("role")
         self._on_scope()
 
     def _delete(self):

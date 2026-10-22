@@ -201,6 +201,81 @@ POSITION_TEMPLATES = {
           "successfulRunsOut", "accuratePassesPercentage", "accurateLongBalls", "accurateLongBallsPercentage"],
 }
 
+# ---------------------------------------------------------------------------
+# Profils types (regroupement statistique des joueurs de champ, voir analysis.player_roles)
+# Métriques de STYLE : taux par 90 min ou parts (pas de volume de saison). clé -> (libellé, nom court,
+# numérateur, dénominateur) ; dénominateur None -> par 90 min, sinon part (ramenée vers la moyenne si peu
+# d'occurrences).
+# ---------------------------------------------------------------------------
+ROLE_FEATURES = {
+    "touches": ("Touches de balle /90", "touches", ("touches",), None),
+    "opp_half": ("Part des passes dans le camp adverse", "jeu dans le camp adverse",
+                 ("accurateOppositionHalfPasses",), ("accuratePasses",)),
+    "long": ("Part de longs ballons", "longs ballons", ("totalLongBalls",), ("totalPasses",)),
+    "final3": ("Passes réussies dernier tiers /90", "passes dernier tiers", ("accurateFinalThirdPasses",), None),
+    "cross": ("Centres tentés /90", "centres", ("totalCross",), None),
+    "dribble": ("Dribbles tentés /90", "dribbles", ("totalContest",), None),
+    "shots": ("Tirs /90", "tirs", ("totalShots",), None),
+    "box": ("Part des tirs dans la surface", "tirs dans la surface", ("shotsFromInsideTheBox",), ("totalShots",)),
+    "npxg": ("npxG /90", "npxG", ("npxg",), None),
+    "keyp": ("Passes clés /90", "passes clés", ("keyPasses",), None),
+    "def": ("Tacles + interceptions /90", "tacles + interceptions", ("tackles", "interceptions"), None),
+    "clear": ("Dégagements /90", "dégagements", ("clearances",), None),
+    "aerial": ("Duels aériens disputés /90", "duels aériens", ("aerialDuelsWon", "aerialLost"), None),
+    "press": ("Ballons gagnés dernier tiers /90", "récupérations hautes", ("possessionWonAttThird",), None),
+}
+ROLE_GROUP_FEATURES = {
+    "D": ["touches", "opp_half", "long", "final3", "cross", "dribble", "keyp", "def", "clear", "aerial"],
+    "M": ["touches", "opp_half", "long", "final3", "cross", "dribble", "shots", "npxg", "keyp", "def", "aerial",
+          "press"],
+    "F": ["touches", "opp_half", "cross", "dribble", "shots", "box", "npxg", "keyp", "def", "aerial", "press"],
+}
+# Rôles reconnus : nom -> signature (sens attendu des z-scores du centre du groupe). Un groupe prend le rôle dont
+# la signature lui ressemble le plus (cosinus), sans doublon ; les rôles « généraux » ne servent qu'à 2 groupes.
+ROLE_TABLE = {
+    "D": {
+        "Défenseur de surface": {"clear": 1, "aerial": 1, "long": .4, "opp_half": -.7, "final3": -.5, "cross": -.5,
+                                 "dribble": -.5, "keyp": -.4},
+        "Défenseur relanceur": {"touches": 1, "final3": .6, "long": .2, "cross": -.5, "dribble": -.3, "keyp": -.2},
+        "Latéral offensif": {"keyp": 1, "cross": 1, "final3": .8, "opp_half": .6, "dribble": .5, "clear": -.6,
+                             "aerial": -.6},
+        "Latéral équilibré": {"opp_half": .7, "cross": .6, "dribble": .6, "def": .3, "clear": -.7, "aerial": -.7},
+        "Défenseur agressif": {"def": 1, "dribble": .3, "opp_half": .3, "clear": -.2},
+    },
+    "M": {
+        "Pivot récupérateur": {"def": 1, "long": .5, "opp_half": -.8, "shots": -.6, "npxg": -.6, "press": -.4,
+                               "dribble": -.4},
+        "Meneur reculé": {"long": 1, "cross": .5, "touches": .3, "keyp": .3, "opp_half": -.3, "npxg": -.4},
+        "Milieu organisateur": {"touches": 1, "final3": .9, "keyp": .2, "long": -.2, "npxg": -.3, "aerial": -.3},
+        "Box-to-box": {"def": .7, "npxg": .6, "shots": .5, "aerial": .5, "opp_half": .4, "touches": -.2},
+        "Milieu offensif": {"npxg": 1, "shots": .8, "dribble": .8, "opp_half": .7, "keyp": .5, "def": -.7,
+                            "touches": -.3},
+        "Milieu créateur": {"keyp": 1, "final3": .6, "shots": .5, "press": .5, "dribble": .4, "def": -.6},
+        "Milieu de couloir": {"cross": 1, "dribble": .7, "opp_half": .5, "keyp": .4, "aerial": -.4, "def": -.3},
+    },
+    "F": {
+        "Renard des surfaces": {"npxg": 1, "box": .8, "shots": .7, "touches": -.6, "dribble": -.5, "cross": -.5,
+                                "def": -.4},
+        "Avant-centre pivot": {"aerial": 1, "box": .6, "dribble": -.7, "touches": -.5, "opp_half": -.3},
+        "Ailier percuteur": {"dribble": 1, "touches": .8, "keyp": .6, "cross": .3, "box": -.3, "aerial": -.6},
+        "Ailier centreur": {"cross": 1, "keyp": .6, "dribble": .2, "box": -.8, "npxg": -.6, "aerial": -.4},
+        "Attaquant de soutien": {"def": .8, "keyp": .5, "touches": .4, "press": .3, "npxg": -.5, "box": -.5},
+        "Attaquant de profondeur": {"opp_half": .8, "shots": .5, "npxg": .4, "touches": -.6, "cross": -.3},
+    },
+}
+ROLE_GENERAL = {
+    "D": {"Défenseur axial": {"clear": 1, "aerial": 1, "touches": .3, "cross": -1, "dribble": -.8, "keyp": -.8,
+                              "opp_half": -.8},
+          "Latéral": {"cross": 1, "dribble": .8, "keyp": .8, "opp_half": .8, "clear": -1, "aerial": -1}},
+    "M": {"Milieu défensif": {"def": 1, "long": .5, "touches": .3, "opp_half": -1, "npxg": -.8, "shots": -.8},
+          "Milieu offensif": {"npxg": 1, "shots": 1, "dribble": .8, "keyp": .8, "opp_half": .8, "def": -.8}},
+    "F": {"Attaquant axial": {"box": 1, "aerial": 1, "npxg": .6, "dribble": -1, "cross": -.8, "touches": -.6},
+          "Attaquant de couloir": {"dribble": 1, "cross": .8, "touches": .8, "keyp": .6, "box": -1, "aerial": -1}},
+}
+ROLE_MIN_MINUTES = 270   # minimum absolu ; en saison avancée, 25 % du temps de jeu du joueur le plus utilisé
+ROLE_MIN_PLAYERS = 20    # en dessous (par poste) : pas de regroupement
+ROLE_MAX_K = {"D": 4, "M": 4, "F": 5}  # nombre de groupes visé ; moins si le regroupement est instable
+
 # Évolution d'une saison à l'autre (fiche joueur, onglet « Évolution & carrière »)
 EVOLUTION_MIN_MINUTES = 900  # en dessous : saison tracée en pointillés (échantillon réduit)
 EVOLUTION_FLOOR = 180        # en dessous : saison ignorée

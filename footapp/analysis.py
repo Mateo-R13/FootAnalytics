@@ -1,4 +1,6 @@
-"""Calculs analytiques : normalisation par 90 minutes, centiles."""
+"""Calculs analytiques : normalisation par 90 minutes, centiles, modèles, profils types."""
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -8,6 +10,14 @@ from .config import (
     EVOLUTION_FLOOR,
     EVOLUTION_MIN_MINUTES,
     LOWER_IS_BETTER,
+    POSITIONS,
+    ROLE_FEATURES,
+    ROLE_GENERAL,
+    ROLE_GROUP_FEATURES,
+    ROLE_MAX_K,
+    ROLE_MIN_MINUTES,
+    ROLE_MIN_PLAYERS,
+    ROLE_TABLE,
     SHOT_BODY_PARTS,
     SHOT_SITUATIONS,
     TEAM_LOWER_IS_BETTER,
@@ -691,3 +701,247 @@ def rest_days(last: pd.DataFrame, kickoff) -> dict:
         return {"days": None, "last14": 0}
     return {"days": int((kickoff.normalize() - dates.max().normalize()).days),
             "last14": int((dates >= kickoff - pd.Timedelta(days=14)).sum())}
+
+
+# ---------------------------------------------------------------------------
+# Profils types : regroupement statistique (k-means) des joueurs de champ sur des métriques de style
+# ---------------------------------------------------------------------------
+SHARE_PRIOR = 5.0  # une part calculée sur peu d'occurrences (2 tirs…) est ramenée vers la moyenne du poste
+
+
+def kmeans(X: np.ndarray, k: int, seed: int = 0, n_init: int = 8, iters: int = 100) -> tuple[np.ndarray, np.ndarray]:
+    """k-means (initialisation k-means++, `n_init` relances, meilleure inertie) : (groupes, centres).
+
+    Groupes renumérotés par taille décroissante (puis premier joueur) : résultat déterministe pour une graine."""
+    rng = np.random.default_rng(seed)
+    best, best_inertia = None, np.inf
+    for _ in range(n_init):
+        centers = [X[rng.integers(len(X))]]
+        for _ in range(1, k):
+            d2 = ((X[:, None] - np.array(centers)[None]) ** 2).sum(-1).min(1)
+            p = d2 / d2.sum() if d2.sum() > 0 else None
+            centers.append(X[rng.choice(len(X), p=p)])
+        centers = np.array(centers)
+        for _ in range(iters):
+            labels = ((X[:, None] - centers[None]) ** 2).sum(-1).argmin(1)
+            new = np.array([X[labels == j].mean(0) if (labels == j).any() else centers[j] for j in range(k)])
+            if np.allclose(new, centers):
+                break
+            centers = new
+        inertia = float(((X - centers[labels]) ** 2).sum())
+        if inertia < best_inertia - 1e-9:
+            best, best_inertia = (labels, centers), inertia
+    labels, centers = best
+    order = sorted(range(k), key=lambda j: (-(labels == j).sum(), np.argmax(labels == j)))
+    remap = np.empty(k, int)
+    remap[order] = np.arange(k)
+    return remap[labels], centers[order]
+
+
+def adjusted_rand(a, b) -> float:
+    """Indice de Rand ajusté entre deux partitions : 1 = identiques, ~0 = pas mieux que le hasard."""
+    _, ia = np.unique(a, return_inverse=True)
+    _, ib = np.unique(b, return_inverse=True)
+    table = np.zeros((ia.max() + 1, ib.max() + 1))
+    np.add.at(table, (ia, ib), 1)
+
+    def pairs(x):
+        return float((x * (x - 1) / 2).sum())
+
+    n = len(ia)
+    sij, sa, sb = pairs(table), pairs(table.sum(1)), pairs(table.sum(0))
+    expected = sa * sb / (n * (n - 1) / 2) if n > 1 else 0.0
+    top = (sa + sb) / 2
+    return 1.0 if top == expected else (sij - expected) / (top - expected)
+
+
+def pca_2d(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """ACP par SVD : (coordonnées sur les 2 premiers axes, part de variance expliquée, axes × métriques).
+    Signe fixé (la métrique qui pèse le plus sur chaque axe a un poids positif) : carte reproductible."""
+    Xc = X - X.mean(0)
+    _, s, vt = np.linalg.svd(Xc, full_matrices=False)
+    vt = vt[:2] * np.sign(vt[:2][np.arange(2), np.abs(vt[:2]).argmax(1)])[:, None]
+    var = s ** 2
+    return Xc @ vt.T, var[:2] / var.sum() if var.sum() else np.zeros(2), vt
+
+
+def role_min_minutes(pool: pd.DataFrame) -> int:
+    """Temps de jeu minimum pour recevoir un profil type : ROLE_MIN_MINUTES, ou 25 % du temps de jeu du joueur le
+    plus utilisé (arrondi à 90 min) quand la saison est avancée."""
+    top = float(pool["minutesPlayed"].max()) if pool is not None and not pool.empty else 0.0
+    return int(max(ROLE_MIN_MINUTES, round(0.25 * top / 90) * 90))
+
+
+def role_features(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """Métriques de style (ROLE_FEATURES) : taux par 90 min, ou parts ramenées vers la part moyenne du groupe
+    (poids SHARE_PRIOR occurrences) ; une donnée manquante prend la médiane du groupe."""
+    minutes = df["minutesPlayed"].astype(float).where(lambda m: m > 0)
+    out = {}
+    for key in keys:
+        _, _, num, den = ROLE_FEATURES[key]
+        n = df[list(num)].astype(float).fillna(0).sum(axis=1)
+        if den is None:
+            out[key] = n / minutes * 90
+        else:
+            d = df[list(den)].astype(float).fillna(0).sum(axis=1)
+            mean = n.sum() / d.sum() if d.sum() > 0 else 0.0
+            out[key] = (n + SHARE_PRIOR * mean) / (d + SHARE_PRIOR)
+    values = pd.DataFrame(out, index=df.index)
+    return values.fillna(values.median()).fillna(0.0)
+
+
+def _standardize(values: pd.DataFrame) -> np.ndarray:
+    std = values.std(ddof=0).replace(0, 1.0)
+    return ((values - values.mean()) / std).clip(-3, 3).to_numpy(float)
+
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    return float(a @ b / (na * nb)) if na and nb else 0.0
+
+
+def _feature_name(key: str) -> str:
+    return ROLE_FEATURES[key][1]
+
+
+def role_names(centers: np.ndarray, keys: list[str], pos: str) -> list[str]:
+    """Nom de chaque groupe d'après son centre (z-scores) : rôle de ROLE_TABLE (ROLE_GENERAL s'il n'y a que deux
+    groupes) le plus ressemblant (cosinus), sans doublon ; à défaut (ressemblance < 0,3), ses métriques
+    distinctives."""
+    table = ROLE_GENERAL[pos] if len(centers) <= 2 else ROLE_TABLE[pos]
+    protos = {name: np.array([sig.get(k, 0.0) for k in keys], float) for name, sig in table.items()}
+    scores = sorted(((_cosine(c, v), i, name) for i, c in enumerate(centers) for name, v in protos.items()),
+                    reverse=True)
+    names: dict[int, str] = {}
+    for score, i, name in scores:
+        if score >= 0.3 and i not in names and name not in names.values():
+            names[i] = name
+    for i, c in enumerate(centers):
+        if i in names:
+            continue
+        top = [keys[j] for j in np.argsort(-c)]
+        for n_top in range(2, len(keys) + 1):  # nom de secours, unique au sein du poste
+            name = f"{POSITIONS[pos]} : {' et '.join(_feature_name(k) for k in top[:n_top])}"
+            if name not in names.values():
+                break
+        names[i] = name
+    return [names[i] for i in range(len(centers))]
+
+
+def _stability(X: np.ndarray, k: int, runs: int = 12) -> tuple[float, float]:
+    """Stabilité d'un regroupement en k groupes : (accord entre 4 graines, accord en rééchantillonnant 80 % des
+    joueurs), indices de Rand ajustés moyens. Graines fixes : le choix de k ne dépend pas de la graine demandée."""
+    ref = kmeans(X, k, 0)[0]
+    seeds = np.mean([adjusted_rand(ref, kmeans(X, k, s)[0]) for s in (1, 2, 3)])
+    rng = np.random.default_rng(0)
+    boots = []
+    for _ in range(runs):
+        idx = rng.choice(len(X), int(0.8 * len(X)), replace=False)
+        _, centers = kmeans(X[idx], k, 0, n_init=4)
+        boots.append(adjusted_rand(ref, ((X[:, None] - centers[None]) ** 2).sum(-1).argmin(1)))
+    return float(seeds), float(np.mean(boots))
+
+
+ROLE_COLUMNS = ["player_id", "player", "team", "team_id", "pos", "minutesPlayed", "role", "group", "pc1", "pc2"]
+
+
+@dataclass
+class Roles:
+    """Résultat de player_roles. table : une ligne par joueur classé (ROLE_COLUMNS, f:<métrique> = valeur,
+    z:<métrique> = z-score au poste) ; groups[poste] : status ("ok", "small" = trop peu de joueurs, "unstable",
+    "missing" = métriques absentes),
+    n, k, names, stability (rééchantillonnage), seed_stability, centers (z-scores, index = noms), features,
+    explained (variance des 2 axes), axes (poids des métriques sur les 2 axes)."""
+    table: pd.DataFrame
+    groups: dict
+    min_minutes: int
+
+    def of(self, player_id) -> pd.Series | None:
+        rows = self.table[self.table["player_id"] == player_id]
+        return rows.iloc[0] if not rows.empty else None
+
+
+def player_roles(pool: pd.DataFrame, min_minutes: int | None = None, seed: int = 0, max_k: dict | None = None,
+                 min_players: int = ROLE_MIN_PLAYERS) -> Roles:
+    """Profils types : k-means, poste par poste (D, M, F ; gardiens exclus), sur les métriques de style
+    standardisées (z-scores bornés à ±3) des joueurs ayant joué au moins `min_minutes` (role_min_minutes sinon).
+
+    Nombre de groupes : ROLE_MAX_K[poste] (au plus un groupe pour 10 joueurs), réduit jusqu'à obtenir un
+    regroupement stable : indice de Rand ajusté ≥ 0,8 entre graines et ≥ 0,75 en rééchantillonnant 80 % des
+    joueurs, aucun groupe de moins de 5 % des joueurs. Aucun profil pour un poste de moins de `min_players` joueurs
+    ou sans regroupement stable à 2 groupes.
+    """
+    max_k = max_k or ROLE_MAX_K
+    if pool is None or pool.empty or "pos" not in pool:
+        return Roles(pd.DataFrame(columns=ROLE_COLUMNS), {}, ROLE_MIN_MINUTES)
+    if min_minutes is None:
+        min_minutes = role_min_minutes(pool)
+    frames, groups = [], {}
+    for pos, keys in ROLE_GROUP_FEATURES.items():
+        d = pool[(pool["pos"] == pos) & (pool["minutesPlayed"].fillna(0) >= min_minutes)]
+        d = d.drop_duplicates("player_id").sort_values("player_id").reset_index(drop=True)
+        info = {"status": "small", "n": len(d), "k": 0, "names": [], "features": keys}
+        groups[pos] = info
+        if any(c not in d for k in keys for c in (*ROLE_FEATURES[k][2], *(ROLE_FEATURES[k][3] or ()))):
+            info["status"] = "missing"  # source de secours (Understat) : métriques de style absentes
+            continue
+        if len(d) < min_players:
+            continue
+        values = role_features(d, keys)
+        X = _standardize(values)
+        chosen = None
+        for k in range(max(2, min(max_k[pos], len(d) // 10)), 1, -1):
+            labels, centers = kmeans(X, k, seed)
+            if np.bincount(labels, minlength=k).min() < max(3, 0.05 * len(d)):
+                continue
+            seeds, boots = _stability(X, k)
+            if seeds >= 0.8 and boots >= 0.75:
+                chosen = (k, labels, centers, seeds, boots)
+                break
+        if chosen is None:
+            info["status"] = "unstable"
+            continue
+        k, labels, centers, seeds, boots = chosen
+        names = role_names(centers, keys, pos)
+        coords, explained, axes = pca_2d(X)
+        info.update(status="ok", k=k, names=names, stability=boots, seed_stability=seeds, explained=explained,
+                    centers=pd.DataFrame(centers, index=names, columns=keys),
+                    axes=pd.DataFrame(axes, index=["pc1", "pc2"], columns=keys))
+        frame = d[[c for c in [*ROLE_COLUMNS[:6], "league"] if c in d]].copy()
+        frame["role"] = [names[j] for j in labels]
+        frame["group"] = labels
+        frame["pc1"], frame["pc2"] = coords[:, 0], coords[:, 1]
+        for j, key in enumerate(keys):
+            frame[f"f:{key}"] = values[key].to_numpy()
+            frame[f"z:{key}"] = X[:, j]
+        frames.append(frame)
+    table = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=ROLE_COLUMNS)
+    return Roles(table, groups, int(min_minutes))
+
+
+def role_highlights(roles: Roles, player_id: int, n: int = 3) -> list[tuple[str, float, float]]:
+    """Métriques les plus distinctives d'un joueur au sein de son poste : [(clé, valeur, z-score)], par écart
+    décroissant à la moyenne du poste (z-score en valeur absolue)."""
+    row = roles.of(player_id)
+    if row is None:
+        return []
+    keys = [c[2:] for c in roles.table.columns if c.startswith("z:") and pd.notna(row[c])]
+    keys.sort(key=lambda k: -abs(row[f"z:{k}"]))
+    return [(k, float(row[f"f:{k}"]), float(row[f"z:{k}"])) for k in keys[:n]]
+
+
+def role_value(key: str, value: float) -> str:
+    """Valeur d'une métrique de style lisible : part en %, taux par 90 min à 2 décimales."""
+    if ROLE_FEATURES[key][3] is not None:
+        return f"{100 * value:.0f} %"
+    return f"{value:.1f}" if abs(value) >= 10 else f"{value:.2f}"
+
+
+def role_axes(info: dict) -> tuple[str, str]:
+    """Libellés des deux axes de la carte ACP : les deux métriques qui pèsent le plus de chaque côté de l'axe."""
+    def label(axis):
+        w = info["axes"].loc[axis].sort_values()
+        low = ", ".join(_feature_name(k) for k in w.index[:2])
+        return f"← {low}   ·   {', '.join(_feature_name(k) for k in w.index[::-1][:2])} →"
+
+    return label("pc1"), label("pc2")

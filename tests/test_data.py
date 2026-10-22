@@ -355,3 +355,23 @@ def test_score_tirs_au_but():
     last = data.team_last_events(2)
     assert set(last["Score"]) == {"4-1", "0-2"}  # du point de vue de l'équipe 2
     assert last.set_index("Score").loc["4-1", "Résultat"] == "V"
+
+
+def test_profils_types_donnees_enregistrees(data, meta):
+    """Début de saison réel : seuil de 270 min, profils déterministes, noms uniques, une carte par poste."""
+    from footapp.analysis import player_roles, role_min_minutes
+
+    players = data.player_season_stats(meta["ut"], meta["sid"])
+    roles = player_roles(players)
+    assert roles.min_minutes == role_min_minutes(players) >= 270
+    assert (roles.table["minutesPlayed"] >= roles.min_minutes).all()
+    assert set(roles.table["pos"]) <= {"D", "M", "F"}
+    for pos, info in roles.groups.items():
+        rows = roles.table[roles.table["pos"] == pos]
+        if info["status"] == "ok":
+            assert len(set(info["names"])) == info["k"] == rows["role"].nunique()
+            assert rows[["pc1", "pc2"]].notna().all().all() and 0 <= info["stability"] <= 1
+        else:
+            assert rows.empty
+    again = player_roles(players)
+    assert roles.table[["player_id", "role"]].equals(again.table[["player_id", "role"]])
