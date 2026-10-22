@@ -402,3 +402,27 @@ LINEUP_GROUPS = {
     "Gardien": ["Arrêts", "Arrêts dans la surface", "Buts évités", "Sorties aériennes", "Dégagements des poings"],
     "Impact (Sofascore)": ["Valeur passes", "Valeur dribbles", "Valeur tirs", "Valeur défense", "Valeur gardien"],
 }
+
+# --- avant-match -------------------------------------------------------------------------------
+# Motifs d'absence Sofascore (missingPlayers.reason) ; autre code -> « Indisponible »
+MISSING_REASONS = {1: "Blessure", 4: "Raison personnelle", 12: "Suspension (cartons)",
+                   13: "Suspension (carton rouge)"}
+# Détail d'absence (anglais chez Sofascore) ; texte brut affiché s'il n'est pas connu
+INJURY_FR = {
+    "Injury": "Blessure", "Muscle Injury": "Blessure musculaire", "Thigh Injury": "Blessure à la cuisse",
+    "Hamstring Injury": "Ischio-jambiers", "Groin Injury": "Adducteurs", "Calf Injury": "Mollet",
+    "Knee Injury": "Genou", "Cruciate Ligament Injury": "Ligaments croisés", "Ankle Injury": "Cheville",
+    "Foot Injury": "Pied", "Leg Injury": "Jambe", "Back Injury": "Dos", "Hip Injury": "Hanche",
+    "Shoulder Injury": "Épaule", "Head Injury": "Tête", "Concussion": "Commotion cérébrale",
+    "Achilles Tendon Injury": "Tendon d'Achille", "Hand Injury": "Main", "Arm Injury": "Bras",
+    "Toe Injury": "Orteil", "Rib Injury": "Côtes", "Knock": "Coup", "Illness": "Maladie",
+    "Achilles tendon rupture": "Rupture du tendon d'Achille", "Broken leg": "Fracture de la jambe",
+    "Broken Leg": "Fracture de la jambe", "Broken Ankle": "Fracture de la cheville", "Broken Foot": "Fracture du pied",
+    "Broken Arm": "Fracture du bras", "Broken Nose": "Fracture du nez", "Meniscus Injury": "Ménisque",
+    "Ligament Injury": "Ligaments", "Abdominal Injury": "Abdominaux", "Adductor Injury": "Adducteurs",
+    "Lack of match fitness": "Manque de rythme", "Fitness": "Condition physique", "Surgery": "Opération",
+    "red_card_suspension": "Carton rouge", "yellow_card_suspension": "Accumulation de cartons jaunes",
+    "yellow_or_red_card_suspension": "Cartons", "personal_reason": "Raison personnelle", "suspension": "Suspension",
+}
+FRIENDLY_UT = {1337, 853}  # matchs amicaux (Int. Champions Cup, amicaux de clubs) exclus des confrontations
+PREMATCH_MIN_MATCHES = 5   # en dessous (coupes en début de saison) : profils et joueurs clés masqués

@@ -80,3 +80,21 @@ def test_cache_des_effectifs_allege(tmp_path, monkeypatch):
     assert stored.keys() == {"players"}  # rien d'autre n'est écrit sur le disque
     assert set(stored["players"][0]["player"]) <= set(SQUAD_FIELDS)
     assert stored["players"][0]["player"]["country"] == {"name": "France"}
+
+
+def test_avant_match_textes_api_en_texte_brut(qapp):
+    """Noms venus de l'API (équipes, stade, arbitre…) jamais interprétés en HTML sur la page Avant-match."""
+    from datetime import datetime
+
+    from PySide6.QtCore import Qt
+
+    from footapp.ui.pages.prematch import _plain, compose, info_lines
+
+    event = {"id": 1, "home": "<b>A</b>", "away": "<img src=x>", "home_id": 1, "away_id": 2,
+             "date": datetime(2026, 1, 1, 20)}
+    bundle = {"info": {"competition": "<i>C</i>", "venue": "<a href='x'>S</a>", "referee": "<b>R</b>"},
+              "managers": {"home": "<u>M</u>", "away": ""}, "lineups": {}, "h2h": None, "last": {}}
+    c = compose(event, bundle, None, {}, pd.DataFrame(), pd.DataFrame(), None, None)
+    label = _plain("\n".join(info_lines(c, "X")))
+    assert label.textFormat() == Qt.PlainText
+    assert "<a href='x'>S</a>" in label.text() and "<b>R</b>" in label.text()

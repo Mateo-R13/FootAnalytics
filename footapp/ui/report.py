@@ -90,6 +90,69 @@ def table_pages(df: pd.DataFrame, title: str, rows_per_page: int = 28) -> list[F
     return pages
 
 
+class PrintChart:
+    """Remplace un ChartWidget pour les fonctions de charts.py, sans widget Qt : figure A4 neuve, utilisable dans
+    une tâche de fond (jamais les canevas affichés, que le fil de l'interface peut redessiner au même moment)."""
+
+    def __init__(self):
+        self.figure = Figure(figsize=A4, layout="constrained", facecolor=theme.SURFACE)
+
+    def clear(self) -> Figure:
+        self.figure.clear()
+        self.figure.set_layout_engine("constrained")
+        return self.figure
+
+    def draw(self):
+        pass
+
+    def message(self, text: str):
+        fig = self.clear()
+        fig.text(0.5, 0.5, text, ha="center", va="center", color=theme.MUTED, fontsize=11)
+
+    def add_hover(self, ax, collection, labels):
+        pass  # pas de survol sur papier
+
+
+def _cells(df: pd.DataFrame) -> np.ndarray:
+    out = df.copy()
+    for c in out.columns:
+        if pd.api.types.is_float_dtype(out[c]):
+            out[c] = out[c].map(lambda v: "" if pd.isna(v) else (f"{v:.0f}" if float(v).is_integer() else f"{v:.2f}"))
+    return out.astype(object).where(out.notna(), "").astype(str).apply(lambda col: col.str.slice(0, 45)).values
+
+
+def tables_page(title: str, blocks: list[tuple[str, pd.DataFrame]], note: str = "") -> Figure:
+    """Plusieurs petits tableaux (sous-titre, DataFrame) empilés sur une page A4 ; un tableau vide affiche
+    simplement son sous-titre (qui doit alors dire pourquoi)."""
+    fig = Figure(figsize=A4, facecolor=theme.SURFACE)
+    fig.text(0.04, 0.94, title, fontsize=14, weight="bold", color=theme.INK)
+    if note:
+        fig.text(0.04, 0.91, note, fontsize=8, color=theme.MUTED)
+    # hauteur de ligne commune à tous les tableaux (bornée), chaque tableau placé sous son sous-titre
+    head, top = 0.045, 0.88
+    rows = sum(len(d) + 1 for _, d in blocks if not d.empty)
+    row_h = min(0.028, (top - 0.06 - head * len(blocks)) / max(rows, 1))
+    for sub, d in blocks:
+        fig.text(0.04, top, sub, fontsize=10, weight="bold", color=theme.INK2, va="top")
+        top -= head
+        if d.empty:
+            continue
+        height = (len(d) + 1) * row_h
+        ax = fig.add_axes([0.04, top - height + 0.01, 0.92, height])
+        ax.axis("off")
+        t = ax.table(cellText=_cells(d), colLabels=list(d.columns), bbox=[0, 0, 1, 1], cellLoc="left",
+                     colLoc="left")
+        t.auto_set_font_size(False)
+        t.set_fontsize(7.5)
+        for (r, _), cell in t.get_celld().items():
+            cell.set_edgecolor(theme.GRID)
+            cell.set_facecolor(theme.CONTROL if r == 0 else (theme.SURFACE if r % 2 else theme.CARD_HOVER))
+            cell.get_text().set_color(theme.INK2 if r == 0 else theme.INK)
+        top -= height
+    _footer(fig)
+    return fig
+
+
 def save(path: str, figures: list[Figure]):
     """Écrit les figures dans un PDF ; celles de l'interface sont mises au format A4 le temps de l'export."""
     from matplotlib.backends.backend_pdf import PdfPages  # import différé : ~0,3 s, inutile au démarrage

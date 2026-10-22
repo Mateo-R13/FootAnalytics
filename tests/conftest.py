@@ -128,3 +128,10 @@ def meta(recorded):
     m = dict(recorded["meta"])
     m["event"] = {**m["event"], "date": datetime.fromisoformat(m["event"]["date"])}
     return m
+
+
+@pytest.fixture(scope="session")
+def upcoming(recorded):
+    """Match à venir dont l'avant-match est enregistré (record_fixtures --prematch)."""
+    e = recorded["meta"]["upcoming"]
+    return {**e, "date": datetime.fromisoformat(e["date"])}

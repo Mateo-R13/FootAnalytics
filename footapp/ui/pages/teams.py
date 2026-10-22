@@ -2,8 +2,8 @@ import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QSplitter, QTabWidget
 
-from ...analysis import percentiles, team_form, venue_split
-from ...config import ALL_TEAM_METRICS, CONTINENTAL_CUPS, TEAM_CATEGORIES, TEAM_LOWER_IS_BETTER, TEAM_RADAR
+from ...analysis import team_form, team_radar, venue_split
+from ...config import ALL_TEAM_METRICS, CONTINENTAL_CUPS, TEAM_CATEGORIES
 from .. import charts
 from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card, tool_button
 from . import Page
@@ -205,20 +205,18 @@ class TeamsPage(Page):
         a, b = self.team_a.currentText(), self.team_b.currentText()
         if self.df.empty or not a or not b:
             return
-        df = self.df.copy()
-        for k, (_, _, kind) in ALL_TEAM_METRICS.items():  # radar toujours en valeurs par match
-            if kind == "count":
-                df[k] = df[k] / df["matches"].where(df["matches"] > 0)
-        df = df.reset_index(drop=True)
-        pct = percentiles(df, TEAM_RADAR, TEAM_LOWER_IS_BETTER)
-        params = [ALL_TEAM_METRICS[k][0] for k in TEAM_RADAR]
+        df, keys, pct = team_radar(self.df)  # radar toujours en valeurs par match
+        if len(keys) < 3:
+            return self.compare_chart.message("Statistiques d'équipes insuffisantes pour un radar")
+        params = [ALL_TEAM_METRICS[k][0] for k in keys]
         series, table = [], {"Métrique": params}
         for name in dict.fromkeys((a, b)):
             i = df.index[df["team"] == name][0]
-            raw, cent = df.loc[i, TEAM_RADAR].tolist(), pct.loc[i, TEAM_RADAR].fillna(0).tolist()
+            # centile manquant : laissé vide (un 0 le ferait passer pour la pire équipe)
+            raw, cent = df.loc[i, keys].tolist(), pct.loc[i, keys].tolist()
             series.append((name, cent, raw))
             table[name] = [round(v, 2) if pd.notna(v) else None for v in raw]
-            table[f"{name} · centile"] = [round(c) for c in cent]
+            table[f"{name} · centile"] = [round(c) if pd.notna(c) else None for c in cent]
         charts.radar(self.compare_chart, params, series, "Profils d'équipes comparés",
                      f"Centiles parmi les {len(df)} équipes · {self.ctx.label} · par match · "
                      "métriques défensives inversées (haut = mieux)")

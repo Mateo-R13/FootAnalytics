@@ -27,6 +27,7 @@ from .pages.indices import IndicesPage
 from .pages.matches import MatchesPage
 from .pages.players import PlayersPage
 from .pages.predictions import PredictionsPage
+from .pages.prematch import PrematchPage
 from .pages.profile import ProfilePage
 from .pages.scouting import ScoutingPage
 from .pages.standings import StandingsPage
@@ -38,13 +39,14 @@ from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
 
 # Organisation de la navigation : (titre de section, [classes de pages])
 NAVIGATION = [
-    ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage, PredictionsPage]),
+    ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage, PredictionsPage, PrematchPage]),
     ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage, ValuePage, IndicesPage]),
     ("ÉQUIPES", [TeamsPage]),
     ("", [HelpPage]),
 ]
 NAV_LABELS = {"dashboard": "Tableau de bord", "standings": "Classement", "matches": "Matchs",
-              "predictions": "Pronostics", "players": "Statistiques joueurs", "profile": "Fiche joueur",
+              "predictions": "Pronostics", "prematch": "Avant-match", "players": "Statistiques joueurs",
+              "profile": "Fiche joueur",
               "compare": "Comparaison", "scouting": "Recherche avancée", "value": "Valeur vs performance",
               "indices": "Indices personnalisés",
               "teams": "Équipes",
@@ -159,6 +161,7 @@ class MainWindow(QMainWindow):
         self.season.currentIndexChanged.connect(self._on_season)
         refresh.clicked.connect(self._refresh)
         self.state.open_player.connect(self._open_player)
+        self.state.open_prematch.connect(self._open_prematch)
         self.state.notice.connect(self.banner.show_message)
         self.state.images.loaded.connect(self._refresh_comp_logo)
 
@@ -231,6 +234,10 @@ class MainWindow(QMainWindow):
             return
         self.page("profile").request_player(pid)
         self.show_page("profile")
+
+    def _open_prematch(self, event: dict):
+        self.page("prematch").request_event(event)
+        self.show_page("prematch")
 
     def _palette_entries(self):
         entries = [("page", NAV_LABELS[k].replace("&&", "&"), "page", k) for k in self._page_classes]

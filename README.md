@@ -14,6 +14,7 @@ Python + PySide6, avec installeur Windows (thème sombre ou clair).
 | **Classement** | Classement avec logos, **classement xG** (points attendus xPts, chance / malchance, PPDA officiel), attaque vs défense, points par match |
 | **Matchs** | Par journée : stats d'équipe par période (match / mi-temps) et catégorie, carte des tirs avec xG, xG cumulés minute par minute, courbe de domination, ~70 stats individuelles en 8 groupes, heatmaps, positions moyennes, chronologie |
 | **Pronostics** | Probabilités 1 / N / 2 des prochains matchs (modèle de Poisson sur les xG), matrice des scores, simulation de n'importe quelle affiche, **fiabilité du modèle** (rejoué sur les matchs passés : taux de réussite, score de Brier, calibration) |
+| **Avant-match** | Depuis Pronostics (bouton ou double-clic) : pronostic du modèle, classement et rang xPts, bilan domicile / extérieur, forme des deux équipes, repos et derniers matchs toutes compétitions, **profils comparés** (radar), **joueurs clés** croisés avec les **absents annoncés**, XI probable (estimations Sofascore), **10 dernières confrontations**, badge « fiabilité réduite » sous 5 matchs joués, **rapport PDF** (~7 pages, sans cotes de bookmakers) |
 | **Statistiques joueurs** | ~110 métriques en 11 catégories, filtres poste / équipe / temps de jeu, mode par 90 min, classement graphique, export Excel/CSV |
 | **Fiche joueur** | Identité (âge, pied, valeur, contrat), profil en centiles vs joueurs du même poste, forme match par match, **tirs & heatmap de la saison** (carte des tirs avec xG, xG par tir et % cadrés vs moyenne du poste, répartition par situation / surface de contact / zone), **profils similaires** (joueurs statistiquement les plus proches), **évolution & carrière** (n'importe quelle métrique par 90 min saison après saison : championnat et coupes d'Europe, saisons à faible temps de jeu signalées, moyenne pondérée), toutes les stats avec rang au poste, **liste de suivi**, **export PDF** |
 | **Comparaison** | Radar en centiles de deux joueurs, nuage de points libre, référentiel compétition ou **5 grands championnats** |
@@ -78,6 +79,7 @@ L'icône se régénère avec `python tools\make_icon.py`.
 $env:FOOT_LIVE="1"; .\.venv\Scripts\python.exe -m pytest tests/test_live.py   # contre la vraie API
 .\.venv\Scripts\python.exe -m tests.record_fixtures      # ré-enregistrer les réponses de référence
 .\.venv\Scripts\python.exe -m tests.record_fixtures --history   # n'ajouter que l'historique d'une équipe
+.\.venv\Scripts\python.exe -m tests.record_fixtures --prematch  # n'ajouter que l'avant-match d'un match à venir
 ```
 
 - **Dépendances** : `requirements.txt` liste les dépendances directes ; `requirements.lock` fige toutes les

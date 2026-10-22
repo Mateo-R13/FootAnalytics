@@ -153,14 +153,16 @@ def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, 
     ax.spines["polar"].set_color(theme.AXIS)
     handles = []
     for (name, pct, raw), color in zip(players, theme.SERIES, strict=False):  # au plus 2 joueurs pour 3 couleurs
-        pct = np.nan_to_num(np.asarray(pct, dtype=float))
-        closed = np.r_[pct, pct[:1]]
-        ang = np.r_[angles, angles[:1]]
+        # centile manquant : point absent (tracé à 0, il passerait pour le plus faible de tous)
+        pct = np.asarray(pct, dtype=float)
+        ok = ~np.isnan(pct)
+        closed = np.r_[pct[ok], pct[ok][:1]]
+        ang = np.r_[angles[ok], angles[ok][:1]]
         ax.plot(ang, closed, color=color, lw=2)
         ax.fill(ang, closed, color=color, alpha=0.22)
-        pts = ax.scatter(angles, pct, s=36, color=color, edgecolor=theme.SURFACE, linewidth=1.5, zorder=3)
+        pts = ax.scatter(angles[ok], pct[ok], s=36, color=color, edgecolor=theme.SURFACE, linewidth=1.5, zorder=3)
         chart.add_hover(ax, pts, [f"{name}\n{p} : {_num(v)} (centile {c:.0f})"
-                                  for p, v, c in zip(params, raw, pct, strict=True)])
+                                  for p, v, c, keep in zip(params, raw, pct, ok, strict=True) if keep])
         handles.append(Line2D([], [], color=color, lw=2, marker="o", label=name))
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.02, 0.905), ncol=len(handles), fontsize=9)
     fig.text(0.02, 0.965, title, fontsize=11, fontweight="bold", color=theme.INK, va="top")
@@ -462,11 +464,8 @@ def diverging_bars(chart: ChartWidget, labels, values, title: str, subtitle: str
     chart.draw()
 
 
-def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
-    fig = chart.clear()
-    if form.empty:
-        return chart.message("Aucun match joué")
-    ax = fig.add_subplot()
+def _form_axes(chart: ChartWidget, ax, form: pd.DataFrame, window: int, legend_size: float = 8.5) -> str:
+    """Forme match par match d'une équipe dans `ax` ; renvoie la base utilisée (xG ou buts)."""
     x = np.arange(len(form))
     has_xg = form["xg"].notna().any()
     cols = (("xg", "xg_roll", theme.HOME, "xG pour"), ("xga", "xga_roll", theme.AWAY, "xG contre")) if has_xg else \
@@ -486,9 +485,31 @@ def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
     ax.set_ylim(0, top * 1.08)
     ax.yaxis.grid(True)
     ax.set_axisbelow(True)
-    ax.legend(loc="upper left", fontsize=8.5, bbox_to_anchor=(0, 0.93))
-    basis = "xG" if has_xg else "buts (xG indisponibles)"
+    ax.legend(loc="upper left", fontsize=legend_size, bbox_to_anchor=(0, 0.93))
+    return "xG" if has_xg else "buts (xG indisponibles)"
+
+
+def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
+    fig = chart.clear()
+    if form.empty:
+        return chart.message("Aucun match joué")
+    ax = fig.add_subplot()
+    basis = _form_axes(chart, ax, form, window)
     _title(ax, f"Forme de {team}", f"{basis} match par match · lettres : résultat (V/N/D) · survolez un point")
+    chart.draw()
+
+
+def form_pair(chart: ChartWidget, forms: list[tuple[str, pd.DataFrame]], window: int, last: int = 10):
+    """Forme des deux équipes d'un match, l'une sous l'autre (`last` derniers matchs de la compétition)."""
+    fig = chart.clear()
+    forms = [(team, form.tail(last)) for team, form in forms if form is not None and not form.empty]
+    if not forms:
+        return chart.message("Aucun match joué dans la compétition")
+    for i, (team, form) in enumerate(forms):
+        ax = fig.add_subplot(len(forms), 1, i + 1)
+        basis = _form_axes(chart, ax, form, window, legend_size=7.5)
+        _title(ax, f"Forme de {team} ({len(form)} derniers matchs de la compétition)",
+               f"{basis} match par match · lettres : résultat (V/N/D)" if i == 0 else None)
     chart.draw()
 
 

@@ -41,6 +41,7 @@ ACCENTS = {
     "standings": "#f5b301",
     "matches": "#22c55e",
     "predictions": "#a855f7",
+    "prematch": "#6366f1",
     "players": "#3b82f6",
     "profile": "#06b6d4",
     "compare": "#ec4899",

@@ -264,3 +264,71 @@ def test_type_de_competition():
         (258, "U19 European Championship", "europe", "autre"), (215, "Super League", "switzerland", "league"),
     ]
     assert [competition_kind(ut, name, slug) for ut, name, slug, _ in cases] == [kind for *_, kind in cases]
+
+
+def squad():
+    """Deux équipes : 1 (joueurs 0-5, dont un gardien et un remplaçant peu utilisé) et 2 (joueurs 10-12)."""
+    rows = []
+    for pid, team, pos, minutes, base in [(0, 1, "F", 900, 9), (1, 1, "M", 800, 5), (2, 1, "D", 850, 2),
+                                          (3, 1, "G", 900, 1), (4, 1, "F", 100, 50), (5, 1, "M", 600, 4),
+                                          (10, 2, "F", 900, 7), (11, 2, "M", 900, 3), (12, 2, "G", 900, 2)]:
+        rows.append({"player": f"J{pid}", "player_id": pid, "team_id": team, "team": f"E{team}", "pos": pos,
+                     "position": pos, "minutesPlayed": minutes, "rating": 6 + base / 10,
+                     "goalsAssistsSum": base, "npxg": base / 2, "keyPasses": base * 2,
+                     "defensiveActions": 20 - base, "goalsPrevented": base / 3 if pos == "G" else np.nan,
+                     "expectedGoals": base / 2})
+    return pd.DataFrame(rows)
+
+
+def test_joueurs_cles():
+    from footapp.analysis import KEY_ROLES, key_players
+
+    kp = key_players(squad(), 1, absent_ids=[0])
+    assert kp["Rôle"].is_unique and len(kp) == len(KEY_ROLES) + 1  # un meneur par rôle + le gardien
+    assert set(kp["player_id"]) <= {0, 1, 2, 3, 5}  # bonne équipe, 270 min minimum (le joueur 4 est exclu)
+    assert kp["Centile (poste)"].between(0, 100).all()
+    assert kp.set_index("Rôle").loc["Buts + passes déc.", "player_id"] == 0
+    assert kp.set_index("Rôle").loc["Gardien : buts évités", "player_id"] == 3
+    assert (kp.loc[kp["player_id"] == 0, "Statut"] == "ABSENT").all()
+    assert (kp.loc[kp["player_id"] != 0, "Statut"] == "").all()
+    assert key_players(pd.DataFrame(), 1).empty
+
+
+def test_impact_des_absences():
+    from footapp.analysis import absence_impact
+
+    missing = pd.DataFrame({"side": "home", "Joueur": ["J0", "J5", "Inconnu"], "player_id": [0, 5, 999]})
+    out = absence_impact(missing, squad(), team_matches=10, key_ids=[0])
+    assert out["% minutes"].dropna().between(0, 100).all()
+    assert out.iloc[0]["Joueur"] == "J0" and out.iloc[0]["% minutes"] == 100  # 900 min sur 10 × 90
+    assert out.set_index("Joueur").loc["J0", "Joueur clé"] == "Oui"
+    assert out.set_index("Joueur").loc["J5", "Joueur clé"] == ""
+    assert pd.isna(out.set_index("Joueur").loc["Inconnu", "% minutes"])  # absent sans statistiques : vide, pas 0
+
+
+def test_repos_et_bilan_des_confrontations():
+    from footapp.analysis import h2h_summary, rest_days
+
+    last = pd.DataFrame({"date": pd.to_datetime(["2026-10-17 20:45", "2026-10-10 20:45", "2026-09-20 15:00"])})
+    rest = rest_days(last, pd.Timestamp("2026-10-23 21:00"))
+    assert rest == {"days": 6, "last14": 2}
+    assert rest_days(pd.DataFrame(columns=["date"]), pd.Timestamp("2026-10-23")) == {"days": None, "last14": 0}
+    h2h = pd.DataFrame({"Résultat": ["V", "N", "D", "V"], "gf": [2, 1, 0, 3], "ga": [0, 1, 2, 1]})
+    assert h2h_summary(h2h) == {"n": 4, "V": 2, "N": 1, "D": 1, "gf": 6, "ga": 4}
+    assert h2h_summary(pd.DataFrame())["n"] == 0
+
+
+def test_radar_equipes_centile_manquant_vide():
+    from footapp.analysis import team_radar
+    from footapp.config import TEAM_RADAR
+
+    teams = pd.DataFrame({"team": ["A", "B", "C"], "team_id": [1, 2, 3], "matches": [10, 10, 10],
+                          **{k: [1.0, 2.0, 3.0] for k in TEAM_RADAR}})
+    teams.loc[0, "goalsScored"] = np.nan
+    teams["ppda"] = np.nan  # métrique absente pour toutes les équipes : exclue du radar
+    df, keys, pct = team_radar(teams)
+    assert "ppda" not in keys and "goalsScored" in keys
+    assert df.loc[1, "goalsScored"] == pytest.approx(0.2)  # valeurs par match
+    assert pd.isna(pct.loc[0, "goalsScored"])  # jamais remplacé par 0
+    values = pct[keys].to_numpy().ravel()
+    assert ((values[~np.isnan(values)] >= 0) & (values[~np.isnan(values)] <= 100)).all()

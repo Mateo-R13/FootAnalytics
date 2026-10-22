@@ -2,6 +2,7 @@
 
 Données enregistrées (aucun réseau), application Qt sans fenêtre visible, paramètres isolés.
 """
+import re
 import sys
 import time
 
@@ -240,4 +241,73 @@ def test_onglet_historique_equipe(qapp, window, meta):
     # autre équipe (données partielles ou absentes : aucune erreur)
     page.history_team.setCurrentIndex((page.history_team.currentIndex() + 1) % page.history_team.count())
     wait_idle(qapp, w)
+    assert not crashes and not errors, (crashes, errors)
+
+
+def _open_prematch(qapp, w, upcoming):
+    w.show_page("predictions")
+    wait_idle(qapp, w)
+    pred = w.page("predictions")
+    df = pred.table.model_.dataframe()
+    assert "event_id" in df and pred.table.isColumnHidden(list(df.columns).index("event_id"))
+    row = df.index[df["event_id"] == upcoming["id"]][0]
+    pred.table.row_activated.emit(df.iloc[row])  # double-clic -> state.open_prematch
+    wait_idle(qapp, w)
+    page = w.page("prematch")
+    assert w.stack.currentWidget() is page
+    return page
+
+
+def test_avant_match_depuis_les_pronostics(qapp, window, upcoming, tmp_path):
+    w, errors, crashes = window
+    page = _open_prematch(qapp, w, upcoming)
+    assert page.event["id"] == upcoming["id"] and page.bundle
+    assert page.k_home.value.text().endswith("%") and page.k_goals.value.text() != "-"
+    assert upcoming["home"] in page.match_box.currentText() and page.bundle["info"]["venue"] in page.info.text()
+    assert page.pred_chart.figure.axes and page.form_chart.figure.axes
+    assert not page.h2h_table.model_.dataframe().empty
+    if not page.content["absences"].empty:
+        assert "estimations Sofascore" in page.absence_label.text()
+    for i in range(page.tabs.count()):
+        page.tabs.setCurrentIndex(i)
+        wait_idle(qapp, w)
+    # PDF construit dans une tâche de fond
+    pdf = tmp_path / "avant-match.pdf"
+    page.write_pdf(str(pdf))
+    wait_idle(qapp, w)
+    content = pdf.read_bytes()
+    assert content.startswith(b"%PDF")
+    assert len(re.findall(rb"/Type\s*/Page[^s]", content)) >= 6
+    assert not crashes and not errors, (crashes, errors)
+
+
+def test_avant_match_compositions_non_enregistrees(qapp, window, upcoming):
+    """Autre match (rien d'enregistré : réponses absentes) : messages, aucune erreur."""
+    w, errors, crashes = window
+    page = _open_prematch(qapp, w, upcoming)
+    others = [e for e in page.upcoming if e["id"] != upcoming["id"]]
+    if not others:
+        pytest.skip("un seul match à venir enregistré")
+    page.match_box.setCurrentIndex(page.match_box.findData(others[0]["id"]))
+    wait_idle(qapp, w)
+    assert page.event["id"] == others[0]["id"]
+    assert "non communiquées" in page.absence_label.text()
+    assert "aucune absence" not in page.absence_label.text().lower()
+    assert page.absence_table.model_.dataframe().empty
+    assert not crashes and not errors, (crashes, errors)
+
+
+def test_avant_match_fiabilite_reduite(qapp, window, upcoming):
+    """Moins de 5 matchs par équipe : radar et joueurs clés masqués, badge affiché."""
+    import pandas as pd
+
+    w, errors, crashes = window
+    page = _open_prematch(qapp, w, upcoming)
+    tm = w.state.team_matches
+    w.state.team_matches = tm[tm["date"] <= tm["date"].sort_values().unique()[2]].reset_index(drop=True)
+    page._render()
+    assert not page.content["reliable"] and not page.badge.isHidden()
+    assert page.content["radar"] is None and page.keys_splitter.isHidden()
+    assert all(t.model_.dataframe().empty for t in page.key_tables.values())
+    assert isinstance(page.content["standings"], pd.DataFrame)
     assert not crashes and not errors, (crashes, errors)

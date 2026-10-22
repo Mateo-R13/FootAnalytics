@@ -36,6 +36,7 @@ class AppState(QObject):
     profiles_changed = Signal(object)      # DataFrame valeurs / âges / contrats (chargé à la demande)
     watchlist_changed = Signal()
     open_player = Signal(int)              # demande d'ouverture de la fiche joueur
+    open_prematch = Signal(object)         # demande d'ouverture de l'avant-match (ligne de upcoming_events)
     notice = Signal(str)                   # information à afficher dans le bandeau
 
     def __init__(self, data, runner, images, parent=None):
@@ -277,6 +278,13 @@ class AppState(QObject):
     def players_pool(self, scope: str) -> pd.DataFrame | None:
         """'league' -> joueurs de la compétition courante ; 'big5' -> 5 grands championnats (None si pas chargé)."""
         return self.players if scope == "league" else self.big5
+
+    def model_team_names(self) -> tuple[list[str], dict]:
+        """Sofascore et Understat nomment différemment les équipes : (noms du modèle, team_id -> nom du modèle)."""
+        tm = self.team_matches
+        model_names = sorted(tm["team"].unique()) if tm is not None and not tm.empty else []
+        ids = self.team_logo_ids(model_names)
+        return model_names, {tid: name for name, tid in ids.items()}
 
     def team_logo_ids(self, names) -> dict:
         """Noms d'équipes (éventuellement Understat) -> team_id Sofascore pour les logos."""

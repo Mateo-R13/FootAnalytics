@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSplitter, QTabWid
 
 from ...analysis import backtest, backtest_summary, predict_match
 from .. import charts, theme
-from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, table_card
+from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, table_card, tool_button
 from . import Page
 
 
@@ -36,7 +36,14 @@ class PredictionsPage(Page):
         sim.body.addLayout(row)
 
         self.chart = ChartWidget()
-        left = table_card(self.table, "Prochains matchs", "1 = victoire domicile · N = nul · 2 = victoire extérieur")
+        self.table.row_activated.connect(self._open_prematch)
+        left = table_card(self.table, "Prochains matchs", "1 = victoire domicile · N = nul · 2 = victoire extérieur "
+                                                          "· double-clic : avant-match")
+        prematch = tool_button("Avant-match", "fa5s.clipboard-list",
+                               "Rapport d'avant-match du match sélectionné : forme, profils, joueurs clés, absents, "
+                               "confrontations (PDF)")
+        prematch.clicked.connect(lambda: self._open_prematch(self.table.selected_record()))
+        self.header.actions.addWidget(prematch)
         left.add(sim)
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(left)
@@ -147,19 +154,11 @@ class PredictionsPage(Page):
         self.upcoming = events
         self._refresh()
 
-    def _names(self):
-        """Sofascore et Understat nomment différemment les équipes : nom Sofascore -> nom du modèle."""
-        tm = self.state.team_matches
-        model_names = sorted(tm["team"].unique()) if tm is not None and not tm.empty else []
-        ids = self.state.team_logo_ids(model_names)
-        by_id = {tid: name for name, tid in ids.items()}
-        return model_names, by_id
-
     def _refresh(self):
         tm = self.state.team_matches
         if tm is None or self.ctx is None:
             return
-        model_names, by_id = self._names()
+        model_names, by_id = self.state.model_team_names()
         for box in (self.home, self.away):
             current = box.currentText()
             box.blockSignals(True)
@@ -181,13 +180,21 @@ class PredictionsPage(Page):
                          "2 %": round(p["away_win"] * 100), "Date": e["date"].strftime("%d/%m %H:%M"),
                          "Buts attendus": f"{p['lam_home']:.1f} - {p['lam_away']:.1f}",
                          "Score le + probable": p["top_scores"][0][0],
-                         "home_id": e["home_id"], "away_id": e["away_id"], "_home": h, "_away": a})
+                         "home_id": e["home_id"], "away_id": e["away_id"], "_home": h, "_away": a,
+                         "event_id": e["id"]})
         df = pd.DataFrame(rows)
-        self.table.set_dataframe(df, hidden=("home_id", "away_id", "_home", "_away"))
+        self.table.set_dataframe(df, hidden=("home_id", "away_id", "_home", "_away", "event_id"))
         if not df.empty:
             self.table.selectRow(0)
         else:
             self._simulate()
+
+    def _open_prematch(self, rec):
+        if rec is None:
+            return
+        event = next((e for e in self.upcoming if e["id"] == rec["event_id"]), None)
+        if event is not None:
+            self.state.open_prematch.emit(event)
 
     def _on_select(self):
         rec = self.table.selected_record()

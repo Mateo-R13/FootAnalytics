@@ -68,6 +68,16 @@ GLOSSARY = [
      "terrain. Indicatif : ne connaît ni les absences ni la forme du moment."),
     ("Score de Brier", "Erreur moyenne des probabilités annoncées (0 = parfait, plus bas = mieux), comparée à une "
      "référence naïve qui annoncerait toujours la répartition moyenne victoire / nul / défaite."),
+    ("Avant-match", "Pronostics : bouton « Avant-match » ou double-clic sur un match. Pronostic du modèle, classement "
+     "et rang xPts, forme, repos (jours depuis le dernier match, matchs sur 14 jours, toutes compétitions), profils, "
+     "joueurs clés, absents, XI probable et 10 dernières confrontations officielles (amicaux exclus ; score sans les "
+     "tirs au but, indiqués à part), avec export PDF. Absents et XI probable sont des estimations Sofascore, "
+     "susceptibles de changer : le modèle n'en tient pas compte. Aucune cote de bookmaker."),
+    ("Joueurs clés", "Avant-match : meilleur joueur de l'équipe pour la note, buts + passes décisives, npxG, passes "
+     "clés et actions défensives (buts évités pour les gardiens), 270 min minimum, avec son centile parmi les joueurs "
+     "du même poste. % minutes d'un absent = minutes jouées ÷ (matchs de l'équipe × 90)."),
+    ("Fiabilité réduite", "Avant-match : une des deux équipes a joué moins de 5 matchs dans la compétition (coupes, "
+     "début de saison). Les forces du modèle reposent sur trop peu de matchs : profils et joueurs clés sont masqués."),
     ("Grosse occasion", "Situation où l'on attend raisonnablement un but (définition Opta / Sofascore)."),
     ("Actions défensives", "Tacles + interceptions + dégagements + tirs contrés."),
     ("Raccourcis", "Ctrl+K (ou Ctrl+F) : recherche globale · double-clic sur un joueur : sa fiche."),

@@ -4,6 +4,7 @@ Usage (depuis la racine du projet) :
     .venv\\Scripts\\python.exe -m tests.record_fixtures
     .venv\\Scripts\\python.exe -m tests.record_fixtures --squads   (ajoute seulement les effectifs)
     .venv\\Scripts\\python.exe -m tests.record_fixtures --history  (ajoute seulement l'historique d'une équipe)
+    .venv\\Scripts\\python.exe -m tests.record_fixtures --prematch (ajoute seulement l'avant-match d'un match à venir)
 
 Rejoue un scénario représentatif (Ligue 1 : classement, joueurs, un match, un joueur, tirs et heatmap de la
 saison de deux joueurs, matchs de la saison des deux sources, prochains matchs, effectifs, historique sur 5 saisons
@@ -150,8 +151,34 @@ def add_history():
           f"({FIXTURE.stat().st_size / 1024:.0f} Ko)")
 
 
+def add_prematch():
+    """Ajoute l'avant-match du premier match à venir déjà enregistré (6 réponses : /event, /lineups, /h2h/events,
+    /managers, derniers matchs des deux équipes) et les statistiques de saison de toutes les équipes (radar), sans
+    rien réenregistrer d'autre ; le match est gardé dans meta["upcoming"]."""
+    with gzip.open(FIXTURE, "rt", encoding="utf-8") as f:
+        saved = json.load(f)
+    meta = saved["meta"]
+    replay = FootData(_Replay(saved["responses"]))
+    event = replay.upcoming_events(meta["ut"], meta["sid"])[0]
+    standings = replay.standings(meta["ut"], meta["sid"])
+    teams = standings[["Équipe", "team_id"]].rename(columns={"Équipe": "name"})
+    with tempfile.TemporaryDirectory() as tmp:
+        client = RecordingClient(Path(tmp))
+        FootData(client).prematch(event)
+        FootData(client).team_season_stats(meta["ut"], meta["sid"], teams)
+    new = {k: v for k, v in client.recorded.items() if k not in saved["responses"]}
+    saved["responses"].update(new)
+    meta["upcoming"] = {**event, "date": event["date"].isoformat()}
+    with gzip.open(FIXTURE, "wt", encoding="utf-8") as f:
+        json.dump(saved, f)
+    print(f"{len(new)} réponses ajoutées ({event['home']} - {event['away']}) -> {FIXTURE} "
+          f"({FIXTURE.stat().st_size / 1024:.0f} Ko)")
+
+
 if __name__ == "__main__":
-    if "--squads" in sys.argv:
+    if "--prematch" in sys.argv:
+        add_prematch()
+    elif "--squads" in sys.argv:
         add_squads()
     elif "--history" in sys.argv:
         add_history()

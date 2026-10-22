@@ -13,7 +13,10 @@ from .api.understat import UnderstatClient
 from .config import (
     CONTINENTAL_CUPS,
     CUP_WORDS,
+    FRIENDLY_UT,
+    INJURY_FR,
     INTERNATIONAL_SLUGS,
+    MISSING_REASONS,
     PENALTY_BOX,
     PENALTY_XG,
     PLAYER_METRICS,
@@ -140,6 +143,29 @@ def _slim_squad(data: dict) -> dict:
             kept["country"] = {"name": kept["country"].get("name")}
         players.append({"player": kept})
     return {"players": players}
+
+
+def _goals(score: dict | None):
+    """Buts affichés d'un camp : `display` (hors tirs au but) ; `current` les inclut après une séance."""
+    score = score or {}
+    value = score.get("display")
+    return score.get("current") if value is None else value
+
+
+def _result(gf, ga, winner, home: bool) -> str:
+    """V / N / D du point de vue d'une équipe (winnerCode Sofascore : 1 domicile, 2 extérieur, 3 nul)."""
+    if winner in (1, 2):
+        return "V" if (winner == 1) == home else "D"
+    if winner == 3:
+        return "N"
+    if gf is None or ga is None:
+        return ""
+    return "N" if gf == ga else "V" if gf > ga else "D"
+
+
+def _competition(e: dict) -> str:
+    tour = e.get("tournament") or {}
+    return (tour.get("uniqueTournament") or {}).get("name") or tour.get("name", "")
 
 
 def _timestamp(value):
@@ -551,8 +577,7 @@ class FootData:
                 "date": datetime.fromtimestamp(e.get("startTimestamp", 0)),
                 "home": e["homeTeam"]["name"], "home_id": e["homeTeam"]["id"],
                 "away": e["awayTeam"]["name"], "away_id": e["awayTeam"]["id"],
-                "home_score": (e.get("homeScore") or {}).get("current"),
-                "away_score": (e.get("awayScore") or {}).get("current"),
+                "home_score": _goals(e.get("homeScore")), "away_score": _goals(e.get("awayScore")),
                 "status": (e.get("status") or {}).get("type", ""),
                 "status_label": (e.get("status") or {}).get("description", ""),
             })
@@ -565,8 +590,7 @@ class FootData:
         if not e:
             return event
         return {**event,
-                "home_score": (e.get("homeScore") or {}).get("current"),
-                "away_score": (e.get("awayScore") or {}).get("current"),
+                "home_score": _goals(e.get("homeScore")), "away_score": _goals(e.get("awayScore")),
                 "status": (e.get("status") or {}).get("type", event["status"]),
                 "status_label": (e.get("status") or {}).get("description", event["status_label"])}
 
@@ -954,6 +978,138 @@ class FootData:
             if len(events) >= limit:
                 break
         return events[:limit]
+
+    # --- avant-match (6 requêtes légères par match, aucune au démarrage) -------------------------
+    def event_info(self, eid: int) -> dict:
+        """Compétition, journée, stade, arbitre (souvent désigné la veille seulement) ; {} si indisponible."""
+        e = (self.client.get(f"/event/{eid}", ttl=HOUR) or {}).get("event") or {}
+        if not e:
+            return {}
+        venue, referee = e.get("venue") or {}, e.get("referee") or {}
+        home, away = e.get("homeTeam") or {}, e.get("awayTeam") or {}
+        return {
+            "id": e.get("id", eid), "custom_id": e.get("customId"), "competition": _competition(e),
+            "round": (e.get("roundInfo") or {}).get("round"),
+            "date": datetime.fromtimestamp(e["startTimestamp"]) if e.get("startTimestamp") else None,
+            "home": home.get("name", ""), "away": away.get("name", ""),
+            "home_short": home.get("shortName") or home.get("name", ""),
+            "away_short": away.get("shortName") or away.get("name", ""),
+            "venue": venue.get("name", ""), "city": (venue.get("city") or {}).get("name", ""),
+            "capacity": venue.get("capacity"),
+            "referee": referee.get("name", ""), "referee_games": referee.get("games"),
+        }
+
+    LINEUP_COLUMNS = ("side", "Joueur", "N°", "Poste", "Note moy.", "player_id")
+    MISSING_COLUMNS = ("side", "Joueur", "Poste", "Motif", "Détail", "Retour prévu", "player_id")
+
+    def prematch_lineups(self, eid: int) -> dict:
+        """Compositions probables (confirmed=False avant l'annonce officielle) et absents annoncés : estimations
+        Sofascore. available=False si Sofascore ne publie rien pour ce match."""
+        data = self.client.get(f"/event/{eid}/lineups", ttl=10 * 60) or {}
+        xi, missing = [], []
+        for side in ("home", "away"):
+            block = data.get(side) or {}
+            for p in block.get("players") or []:
+                if p.get("substitute"):
+                    continue
+                player = p.get("player") or {}
+                xi.append({"side": side, "Joueur": player.get("name", ""), "N°": p.get("shirtNumber"),
+                           "Poste": POSITIONS.get(p.get("position") or player.get("position"), ""),
+                           "Note moy.": p.get("avgRating"), "player_id": player.get("id")})
+            for m in block.get("missingPlayers") or []:
+                player = m.get("player") or {}
+                end = pd.to_datetime(m.get("expectedEndDate"), errors="coerce", utc=True)
+                detail = str(m.get("description") or "")
+                missing.append({"side": side, "Joueur": player.get("name", ""),
+                                "Poste": POSITIONS.get(player.get("position"), ""),
+                                "Motif": MISSING_REASONS.get(m.get("reason"), "Indisponible"),
+                                "Détail": INJURY_FR.get(detail, detail.replace("_", " ")),
+                                "Retour prévu": end.strftime("%d/%m/%Y") if pd.notna(end) else "",
+                                "player_id": player.get("id")})
+        return {
+            "available": bool(data), "confirmed": bool(data.get("confirmed")),
+            "formations": {s: (data.get(s) or {}).get("formation", "") for s in ("home", "away")},
+            "xi": pd.DataFrame(xi, columns=list(self.LINEUP_COLUMNS)),
+            "missing": pd.DataFrame(missing, columns=list(self.MISSING_COLUMNS)),
+        }
+
+    H2H_COLUMNS = ("Date", "Compétition", "Domicile", "Score", "Extérieur", "Résultat", "date", "gf", "ga")
+
+    def head_to_head(self, custom_id: str | None, home_id: int, kickoff: datetime | None,
+                     n: int = 10) -> pd.DataFrame:
+        """`n` dernières confrontations terminées avant le coup d'envoi (amicaux exclus), plus récentes d'abord.
+        Résultat, gf et ga : du point de vue de l'équipe `home_id` ; score sans les tirs au but (indiqués à part)."""
+        data = (self.client.get(f"/event/{custom_id}/h2h/events", ttl=12 * HOUR) or {}) if custom_id else {}
+        limit = kickoff.timestamp() if kickoff is not None else float("inf")
+        rows = []
+        for e in data.get("events") or []:
+            ut = ((e.get("tournament") or {}).get("uniqueTournament") or {}).get("id")
+            if (e.get("status") or {}).get("type") != "finished" or ut in FRIENDLY_UT or \
+                    not e.get("startTimestamp") or e["startTimestamp"] >= limit:
+                continue
+            hs, aws = e.get("homeScore") or {}, e.get("awayScore") or {}
+            h, a = _goals(hs), _goals(aws)
+            if h is None or a is None:
+                continue
+            score = f"{h}-{a}"
+            if hs.get("penalties") is not None and aws.get("penalties") is not None:
+                score += f" (t.a.b. {hs['penalties']}-{aws['penalties']})"
+            ours_home = (e.get("homeTeam") or {}).get("id") == home_id
+            gf, ga = (h, a) if ours_home else (a, h)
+            rows.append({"Date": "", "Compétition": _competition(e),
+                         "Domicile": (e.get("homeTeam") or {}).get("name", ""), "Score": score,
+                         "Extérieur": (e.get("awayTeam") or {}).get("name", ""),
+                         "Résultat": _result(gf, ga, e.get("winnerCode"), ours_home),
+                         "date": datetime.fromtimestamp(e["startTimestamp"]), "gf": gf, "ga": ga})
+        return self._dated(pd.DataFrame(rows, columns=list(self.H2H_COLUMNS)), n)
+
+    @staticmethod
+    def _dated(df: pd.DataFrame, n: int) -> pd.DataFrame:
+        df = df.sort_values("date", ascending=False).head(n).reset_index(drop=True)
+        if not df.empty:
+            df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%d/%m/%Y")
+        return df
+
+    LAST_COLUMNS = ("Date", "Compétition", "Adversaire", "Lieu", "Score", "Résultat", "date")
+
+    def team_last_events(self, tid: int, n: int = 8) -> pd.DataFrame:
+        """`n` derniers matchs terminés de l'équipe, toutes compétitions (plus récents d'abord)."""
+        data = self.client.get(f"/team/{tid}/events/last/0", ttl=HOUR) or {}
+        rows = []
+        for e in data.get("events") or []:
+            if (e.get("status") or {}).get("type") != "finished" or not e.get("startTimestamp"):
+                continue
+            home = (e.get("homeTeam") or {}).get("id") == tid
+            gf = _goals(e.get("homeScore" if home else "awayScore"))
+            ga = _goals(e.get("awayScore" if home else "homeScore"))
+            rows.append({"Date": "", "Compétition": _competition(e),
+                         "Adversaire": (e.get("awayTeam" if home else "homeTeam") or {}).get("name", ""),
+                         "Lieu": "Dom." if home else "Ext.",
+                         "Score": f"{gf}-{ga}" if gf is not None and ga is not None else "",
+                         "Résultat": _result(gf, ga, e.get("winnerCode"), home),
+                         "date": datetime.fromtimestamp(e["startTimestamp"])})
+        return self._dated(pd.DataFrame(rows, columns=list(self.LAST_COLUMNS)), n)
+
+    def managers(self, eid: int) -> dict:
+        data = self.client.get(f"/event/{eid}/managers", ttl=24 * HOUR) or {}
+        return {side: (data.get(f"{side}Manager") or {}).get("name", "") for side in ("home", "away")}
+
+    def prematch(self, event: dict, progress=None) -> dict:
+        """Tout l'avant-match d'un match à venir (event : ligne de upcoming_events) en 6 requêtes ; chaque partie
+        tolère une ressource absente (404)."""
+        eid = event["id"]
+        if progress:
+            progress("Avant-match : informations, compositions et absents")
+        info = self.event_info(eid)
+        lineups = self.prematch_lineups(eid)
+        managers = self.managers(eid)
+        if progress:
+            progress("Avant-match : confrontations et derniers matchs")
+        return {
+            "event": event, "info": info, "lineups": lineups, "managers": managers,
+            "h2h": self.head_to_head(info.get("custom_id"), event["home_id"], info.get("date") or event.get("date")),
+            "last": {"home": self.team_last_events(event["home_id"]), "away": self.team_last_events(event["away_id"])},
+        }
 
     # --- secours Understat -------------------------------------------------------
     def _understat_players(self, ut: int, sid: int) -> pd.DataFrame | None:

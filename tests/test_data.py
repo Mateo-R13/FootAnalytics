@@ -296,3 +296,62 @@ def test_effectifs_equipe_en_erreur_et_devise():
     row = prof.set_index("player_id").loc[10]
     assert row["foot"] == "Gauche" and row["positions"] == "MC/DM"
     assert row["contract_until"].year == 2027
+
+
+def test_avant_match(data, upcoming):
+    from footapp.config import MISSING_REASONS
+
+    bundle = data.prematch(upcoming)
+    info = bundle["info"]
+    assert info["home"] == upcoming["home"] and info["custom_id"]
+    lineups = bundle["lineups"]
+    assert isinstance(lineups["confirmed"], bool)
+    assert list(lineups["xi"].columns) == list(FootData.LINEUP_COLUMNS)
+    assert list(lineups["missing"].columns) == list(FootData.MISSING_COLUMNS)
+    assert set(lineups["missing"]["Motif"]) <= {*MISSING_REASONS.values(), "Indisponible"}
+    assert not lineups["missing"]["Détail"].str.contains("_").any()  # codes traduits ou lisibles
+    h2h = bundle["h2h"]
+    assert len(h2h) <= 10 and set(h2h["Résultat"]) <= {"V", "N", "D"}
+    assert (h2h["date"] < info["date"]).all()  # terminées avant le coup d'envoi
+    assert h2h["date"].is_monotonic_decreasing  # plus récentes d'abord
+    assert not h2h["Compétition"].str.contains("Friendly").any()
+    for side in ("home", "away"):
+        last = bundle["last"][side]
+        assert list(last.columns) == list(FootData.LAST_COLUMNS) and len(last) <= 8
+        assert last["date"].is_monotonic_decreasing and set(last["Résultat"]) <= {"V", "N", "D"}
+    assert set(bundle["managers"]) == {"home", "away"}
+
+
+def test_avant_match_ressources_absentes():
+    class Empty:
+        def get(self, path, ttl=3600, permanent=False, slim=None):
+            return None
+
+    event = {"id": 1, "home_id": 2, "away_id": 3, "home": "A", "away": "B", "date": pd.Timestamp("2026-01-01")}
+    bundle = FootData(Empty()).prematch(event)
+    assert bundle["info"] == {} and not bundle["lineups"]["available"]
+    assert bundle["lineups"]["missing"].empty and bundle["h2h"].empty and bundle["last"]["home"].empty
+
+
+def test_score_tirs_au_but():
+    """Après une séance de tirs au but, `current` les inclut : le score affiché est `display`."""
+    shootout = {"id": 7, "startTimestamp": 1_700_000_000, "status": {"type": "finished", "description": "AP"},
+                "homeTeam": {"id": 1, "name": "Lech"}, "awayTeam": {"id": 2, "name": "AGF"}, "winnerCode": 2,
+                "homeScore": {"current": 4, "display": 1, "penalties": 3},
+                "awayScore": {"current": 8, "display": 4, "penalties": 4},
+                "tournament": {"uniqueTournament": {"id": 7, "name": "Ligue des champions"}}}
+    plain = {**shootout, "id": 8, "homeScore": {"current": 2}, "awayScore": {"current": 0}, "winnerCode": 1}
+
+    class Fake:
+        def get(self, path, ttl=3600, permanent=False, slim=None):
+            return {"events": [shootout, plain]}
+
+    data = FootData(Fake())
+    events = data.round_events(7, 1, {"round": 1})
+    assert [(e["home_score"], e["away_score"]) for e in events] == [(1, 4), (2, 0)]
+    h2h = data.head_to_head("x", 1, pd.Timestamp("2030-01-01").to_pydatetime())
+    shoot = h2h[h2h["Score"].str.contains("t.a.b.")].iloc[0]
+    assert shoot["Score"] == "1-4 (t.a.b. 3-4)" and shoot["Résultat"] == "D" and (shoot["gf"], shoot["ga"]) == (1, 4)
+    last = data.team_last_events(2)
+    assert set(last["Score"]) == {"4-1", "0-2"}  # du point de vue de l'équipe 2
+    assert last.set_index("Score").loc["4-1", "Résultat"] == "V"

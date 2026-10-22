@@ -4,11 +4,14 @@ import pandas as pd
 
 from .config import (
     ALL_PLAYER_METRICS,
+    ALL_TEAM_METRICS,
     EVOLUTION_FLOOR,
     EVOLUTION_MIN_MINUTES,
     LOWER_IS_BETTER,
     SHOT_BODY_PARTS,
     SHOT_SITUATIONS,
+    TEAM_LOWER_IS_BETTER,
+    TEAM_RADAR,
 )
 
 
@@ -442,6 +445,18 @@ def venue_split(tm: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index().rename(columns={"team": "Équipe", "venue": "Lieu"})
 
 
+def team_radar(teams: pd.DataFrame) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
+    """Radar d'équipes : valeurs par match, métriques de TEAM_RADAR renseignées pour au moins une équipe (les
+    autres sont exclues) et centiles parmi les équipes (NaN, jamais 0, quand la valeur d'une équipe manque)."""
+    df = teams.copy()
+    for k, (_, _, kind) in ALL_TEAM_METRICS.items():
+        if kind == "count" and k in df:
+            df[k] = df[k] / df["matches"].where(df["matches"] > 0)
+    df = df.reset_index(drop=True)
+    keys = [k for k in TEAM_RADAR if k in df and df[k].notna().any()]
+    return df, keys, percentiles(df, keys, TEAM_LOWER_IS_BETTER)
+
+
 def rank_in(pool: pd.DataFrame, key: str, value) -> str:
     """Rang « 3e / 45 » d'une valeur dans le pool (sens selon la métrique)."""
     s = pool[key].dropna()
@@ -449,3 +464,88 @@ def rank_in(pool: pd.DataFrame, key: str, value) -> str:
         return ""
     better = (s < value) if key in LOWER_IS_BETTER else (s > value)
     return f"{int(better.sum()) + 1}e / {len(s)}"
+
+
+# --- avant-match ---------------------------------------------------------------------------------
+KEY_ROLES = [("Note moy.", "rating"), ("Buts + passes déc.", "goalsAssistsSum"), ("npxG", "npxg"),
+             ("Passes clés", "keyPasses"), ("Actions défensives", "defensiveActions")]
+GOALKEEPER_ROLE = ("Gardien : buts évités", "goalsPrevented")
+
+
+def key_players(players: pd.DataFrame, team_id, min_minutes: int = 270, absent_ids=()) -> pd.DataFrame:
+    """Meilleur joueur de l'équipe pour chaque rôle (note, buts + passes déc., npxG, passes clés, actions
+    défensives ; buts évités pour les gardiens) parmi ceux ayant joué `min_minutes` : valeur de la saison, par
+    90 min et centile parmi les joueurs du même poste de la compétition (même seuil de minutes)."""
+    columns = ["Rôle", "Joueur", "Poste", "Minutes", "Saison", "/90", "Centile (poste)", "Statut", "player_id"]
+    if players is None or players.empty or "team_id" not in players:
+        return pd.DataFrame(columns=columns)
+    pool = players[players["minutesPlayed"].fillna(0) >= min_minutes]
+    pool90 = per90(pool)
+    absent = {int(a) for a in absent_ids if pd.notna(a)}
+    rows = []
+    for label, key in [*KEY_ROLES, GOALKEEPER_ROLE]:
+        if key not in pool90:
+            continue
+        keepers = key == GOALKEEPER_ROLE[1]
+        candidates = pool90[(pool90["team_id"] == team_id) & ((pool90["pos"] == "G") == keepers)]
+        candidates = candidates.dropna(subset=[key])
+        if candidates.empty:
+            continue
+        i = candidates[key].idxmax()
+        pos = pool90.at[i, "pos"]
+        same = pool90[pool90["pos"] == pos]
+        pct = percentiles(same, [key]).at[i, key]
+        pid = int(pool90.at[i, "player_id"])
+        rows.append({"Rôle": label, "Joueur": pool90.at[i, "player"], "Poste": pool90.at[i, "position"],
+                     "Minutes": int(pool90.at[i, "minutesPlayed"]), "Saison": round(float(pool.at[i, key]), 2) + 0.0,
+                     "/90": None if key == "rating" else round(float(pool90.at[i, key]), 2) + 0.0,
+                     "Centile (poste)": round(float(pct)) if pd.notna(pct) else None,
+                     "Statut": "ABSENT" if pid in absent else "", "player_id": pid})
+    return pd.DataFrame(rows, columns=columns)
+
+
+def absence_impact(missing: pd.DataFrame, players: pd.DataFrame, team_matches: int | None,
+                   key_ids=()) -> pd.DataFrame:
+    """Poids des absents : part des minutes de l'équipe jouées (minutes ÷ (J × 90), 0-100 %), buts + passes déc.,
+    xG de la saison, et « Oui » si l'absent fait partie des joueurs clés."""
+    out = missing.copy()
+    keys = {int(k) for k in key_ids if pd.notna(k)}
+    stats = players.set_index("player_id") if players is not None and not players.empty else pd.DataFrame()
+
+    def value(pid, col):
+        if stats.empty or pid not in stats.index or col not in stats:
+            return np.nan
+        v = stats.loc[pid, col]
+        return float(v.iloc[0] if isinstance(v, pd.Series) else v)
+
+    pids = out["player_id"].tolist()
+    minutes = [value(p, "minutesPlayed") for p in pids]
+    total = (team_matches or 0) * 90
+    out["% minutes"] = [round(min(100.0, 100 * m / total)) if total and pd.notna(m) else np.nan for m in minutes]
+    out["Buts + PD"] = [value(p, "goalsAssistsSum") for p in pids]
+    out["xG"] = [round(v, 2) if pd.notna(v) else np.nan for v in (value(p, "expectedGoals") for p in pids)]
+    out["Joueur clé"] = ["Oui" if pd.notna(p) and int(p) in keys else "" for p in pids]
+    return out.sort_values("% minutes", ascending=False, na_position="last").reset_index(drop=True)
+
+
+def h2h_summary(h2h: pd.DataFrame) -> dict:
+    """Bilan des confrontations du point de vue de l'équipe qui reçoit : victoires, nuls, défaites, buts."""
+    if h2h is None or h2h.empty:
+        return {"n": 0, "V": 0, "N": 0, "D": 0, "gf": 0, "ga": 0}
+    counts = h2h["Résultat"].value_counts()
+    return {"n": len(h2h), "V": int(counts.get("V", 0)), "N": int(counts.get("N", 0)), "D": int(counts.get("D", 0)),
+            "gf": int(h2h["gf"].sum()), "ga": int(h2h["ga"].sum())}
+
+
+def rest_days(last: pd.DataFrame, kickoff) -> dict:
+    """Jours de repos avant le coup d'envoi (depuis le dernier match joué) et matchs joués sur les 14 derniers
+    jours, toutes compétitions ; days=None si aucun match connu."""
+    if last is None or last.empty or kickoff is None:
+        return {"days": None, "last14": 0}
+    kickoff = pd.Timestamp(kickoff)
+    dates = pd.to_datetime(last["date"])
+    dates = dates[dates < kickoff]
+    if dates.empty:
+        return {"days": None, "last14": 0}
+    return {"days": int((kickoff.normalize() - dates.max().normalize()).days),
+            "last14": int((dates >= kickoff - pd.Timedelta(days=14)).sum())}
