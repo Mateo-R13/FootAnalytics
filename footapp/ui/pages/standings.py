@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QLabel, QSplitter, QTabWidget
 
 from ...analysis import xg_table
 from .. import charts
-from ..widgets import ChartWidget, DataTable, chart_card, signed_color, table_card, tool_button
+from ..widgets import ChartWidget, DataTable, chart_card, named, signed_color, table_card, tool_button
 from . import Page
 
 
@@ -17,7 +17,7 @@ class StandingsPage(Page):
         super().__init__(state)
         export = tool_button("Exporter", "fa5s.file-export", "Exporter le tableau affiché (Excel / CSV)")
         export.clicked.connect(self._export)
-        self.header.actions.addWidget(export)
+        self.header.action_bar.addWidget(export)
 
         # classement réel
         self.table = DataTable()
@@ -28,7 +28,7 @@ class StandingsPage(Page):
         side = QTabWidget()
         side.addTab(chart_card(self.scatter), "Attaque vs défense")
         side.addTab(chart_card(self.points), "Points par match")
-        real = QSplitter(Qt.Horizontal)
+        real = QSplitter(Qt.Orientation.Horizontal)
         real.addWidget(table_card(self.table))
         real.addWidget(side)
         real.setSizes([680, 560])
@@ -38,11 +38,11 @@ class StandingsPage(Page):
         self.xg_table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         self.xg_table.model_.set_color("Pts - xPts", signed_color)
         self.luck_chart = ChartWidget()
-        self.xg_source = QLabel(objectName="Muted")
+        self.xg_source = named(QLabel(), "Muted")
         xg_left = table_card(self.xg_table, "Classement réel vs mérité",
                              "Rang xPts : rang selon les points attendus")
         xg_left.add(self.xg_source)
-        expected = QSplitter(Qt.Horizontal)
+        expected = QSplitter(Qt.Orientation.Horizontal)
         expected.addWidget(xg_left)
         expected.addWidget(chart_card(self.luck_chart))
         expected.setSizes([720, 520])

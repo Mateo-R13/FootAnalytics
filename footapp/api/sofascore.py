@@ -11,9 +11,10 @@ import os
 import shutil
 import threading
 import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from curl_cffi import requests
 
@@ -24,7 +25,7 @@ class ApiError(RuntimeError):
     pass
 
 
-def write_atomic(file: Path, content: bytes):
+def write_atomic(file: Path, content: bytes) -> None:
     """Écrit dans un fichier temporaire puis le renomme : un arrêt brutal ne laisse jamais de fichier tronqué."""
     tmp = file.with_name(f"{file.name}.{threading.get_ident()}.tmp")
     try:
@@ -51,12 +52,12 @@ class SofascoreClient:
         self._lock = threading.Lock()
         self._last_request = 0.0
         self._fp_index = 0
-        self._session = requests.Session(impersonate=self.FINGERPRINTS[0])
+        self._session: requests.Session = requests.Session(impersonate=self.FINGERPRINTS[0])
         self._local = threading.local()  # réglages propres à chaque fil d'exécution (cache_first)
         self.purge_old_entries()
 
     @contextmanager
-    def cache_first(self):
+    def cache_first(self) -> Iterator[None]:
         """Dans ce bloc (et ce fil d'exécution), toute donnée en cache est utilisée même expirée :
         affichage immédiat au lancement, la version à jour étant chargée en parallèle."""
         previous = getattr(self._local, "cache_first", False)
@@ -66,7 +67,7 @@ class SofascoreClient:
         finally:
             self._local.cache_first = previous
 
-    def purge_old_entries(self, temp_days: int = 14, image_days: int = 60):
+    def purge_old_entries(self, temp_days: int = 14, image_days: int = 60) -> None:
         """Supprime les entrées temporaires et images trop anciennes pour que le cache ne grossisse pas sans fin."""
         now = time.time()
         for sub, days in (("temp", temp_days), ("images", image_days)):
@@ -92,7 +93,7 @@ class SofascoreClient:
         name = hashlib.sha1(path.encode("utf-8")).hexdigest() + ".json"
         return self.cache_dir / ("permanent" if permanent else "temp") / name
 
-    def _read_cache(self, path: str, ttl):
+    def _read_cache(self, path: str, ttl: float | None) -> tuple[Any, bool]:
         for permanent in (True, False):
             file = self._cache_path(path, permanent)
             if not file.exists():
@@ -107,7 +108,7 @@ class SofascoreClient:
                 return None, False
         return None, False
 
-    def clear_temporary_cache(self):
+    def clear_temporary_cache(self) -> None:
         temp = self.cache_dir / "temp"
         shutil.rmtree(temp, ignore_errors=True)
         temp.mkdir(parents=True, exist_ok=True)
@@ -115,14 +116,15 @@ class SofascoreClient:
     def cache_size_mb(self) -> float:
         return sum(f.stat().st_size for f in self.cache_dir.rglob("*") if f.is_file()) / 1e6
 
-    def clear_all_cache(self):
+    def clear_all_cache(self) -> None:
         for sub in ("temp", "permanent", "images", "understat"):
             shutil.rmtree(self.cache_dir / sub, ignore_errors=True)
         (self.cache_dir / "temp").mkdir(parents=True, exist_ok=True)
         (self.cache_dir / "permanent").mkdir(parents=True, exist_ok=True)
 
     # --- requêtes --------------------------------------------------------
-    def get(self, path: str, ttl: float | None = 3600, permanent: bool = False, slim=None):
+    def get(self, path: str, ttl: float | None = 3600, permanent: bool = False,
+            slim: Callable[[Any], Any] | None = None) -> Any:
         """Renvoie le JSON de `path` (ou None si la ressource n'existe pas).
 
         ttl : durée de validité du cache en secondes.
@@ -130,7 +132,7 @@ class SofascoreClient:
         slim : fonction (idempotente) qui ne garde que les champs utiles, appliquée avant l'écriture du
         cache (réponses volumineuses) et à chaque lecture.
         """
-        def trimmed(data):
+        def trimmed(data: Any) -> Any:
             return slim(data) if slim is not None and data is not None else data
 
         cached, fresh = self._read_cache(path, ttl)
@@ -163,7 +165,7 @@ class SofascoreClient:
         write_atomic(file, content or b"")  # fichier vide = pas d'image, évite de redemander
         return content
 
-    def _fetch(self, path: str, raw: bool = False):
+    def _fetch(self, path: str, raw: bool = False) -> Any:
         with self._lock:
             for _ in range(len(self.FINGERPRINTS)):
                 wait = self.min_interval - (time.time() - self._last_request)

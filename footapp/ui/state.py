@@ -250,9 +250,10 @@ class AppState(QObject):
 
     def profiles_missing(self, scope: str) -> list[int]:
         """Équipes du référentiel dont les valeurs et contrats n'ont pas encore été demandés."""
-        if not self.profiles_available(scope):
+        pool = self.players_pool(scope)
+        if pool is None or not self.profiles_available(scope):
             return []
-        teams = self.players_pool(scope)["team_id"].dropna().astype(int).unique()
+        teams = pool["team_id"].dropna().astype(int).unique()
         return sorted(set(teams.tolist()) - self._profile_teams)
 
     def request_profiles(self, scope: str = "league"):
@@ -368,5 +369,6 @@ class AppState(QObject):
             return None
         key = (kind, int(obj_id), size)
         if key not in self._scaled:
-            self._scaled[key] = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._scaled[key] = pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation)
         return self._scaled[key]

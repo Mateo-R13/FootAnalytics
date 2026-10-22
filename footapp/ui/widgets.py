@@ -46,6 +46,12 @@ def icon(name: str, color: str | None = None):
     return qta.icon(name, color=color or theme.INK2)
 
 
+def named[W: QWidget](widget: W, name: str) -> W:
+    """Donne au widget son nom d'objet (sélecteur de la feuille de style) et le renvoie."""
+    widget.setObjectName(name)
+    return widget
+
+
 def signed_color(v):
     """Couleur de texte pour une valeur signée (vert si positive, rouge si négative)."""
     if v is None or pd.isna(v) or v == 0:
@@ -66,10 +72,10 @@ class Card(QFrame):
         if title or hint:
             head = QHBoxLayout()
             if title:
-                head.addWidget(QLabel(title, objectName="CardTitle"))
+                head.addWidget(named(QLabel(title), "CardTitle"))
             head.addStretch()
             if hint:
-                head.addWidget(QLabel(hint, objectName="CardHint"))
+                head.addWidget(named(QLabel(hint), "CardHint"))
             self.body.addLayout(head)
 
     def add(self, widget, stretch=0):
@@ -92,13 +98,14 @@ class KpiTile(QFrame):
             ic = QLabel()
             ic.setPixmap(icon(icon_name, accent).pixmap(16, 16))
             top.addWidget(ic)
-        top.addWidget(QLabel(label, objectName="KpiLabel"))
+        self.label = named(QLabel(label), "KpiLabel")
+        top.addWidget(self.label)
         top.addStretch()
         lay.addLayout(top)
-        self.value = QLabel("-", objectName="KpiValue")
-        self.sub = QLabel("", objectName="KpiSub")
-        for label in (self.value, self.sub):  # peuvent afficher des noms venus de l'API : jamais de HTML
-            label.setTextFormat(Qt.PlainText)
+        self.value = named(QLabel("-"), "KpiValue")
+        self.sub = named(QLabel(""), "KpiSub")
+        for text in (self.value, self.sub):  # peuvent afficher des noms venus de l'API : jamais de HTML
+            text.setTextFormat(Qt.TextFormat.PlainText)
         lay.addWidget(self.value)
         lay.addWidget(self.sub)
 
@@ -115,20 +122,20 @@ class PageHeader(QWidget):
         lay.setSpacing(14)
         badge = QLabel()
         badge.setFixedSize(46, 46)
-        badge.setAlignment(Qt.AlignCenter)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setStyleSheet(f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {accent}, "
                             f"stop:1 {theme.rgba(accent, 0.55)}); border-radius: 12px;")
         badge.setPixmap(icon(icon_name, "#ffffff").pixmap(24, 24))
         lay.addWidget(badge)
         texts = QVBoxLayout()
         texts.setSpacing(0)
-        texts.addWidget(QLabel(title, objectName="PageTitle"))
-        self.subtitle = QLabel(subtitle, objectName="PageSubtitle")
+        texts.addWidget(named(QLabel(title), "PageTitle"))
+        self.subtitle = named(QLabel(subtitle), "PageSubtitle")
         self.subtitle.setWordWrap(True)
         texts.addWidget(self.subtitle)
         lay.addLayout(texts, 1)
-        self.actions = QHBoxLayout()
-        lay.addLayout(self.actions)
+        self.action_bar = QHBoxLayout()
+        lay.addLayout(self.action_bar)
 
 
 class Banner(QFrame):
@@ -146,7 +153,7 @@ class Banner(QFrame):
         self.text.setOpenExternalLinks(True)
         close = QPushButton(icon("fa5s.times", theme.INK2), "")
         close.setFlat(True)
-        close.setCursor(Qt.PointingHandCursor)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setToolTip("Fermer")
         close.clicked.connect(self.hide)
         lay.addWidget(ic)
@@ -168,19 +175,19 @@ def tool_button(text: str, icon_name: str, tooltip: str = "") -> QPushButton:
     b = QPushButton(icon(icon_name), f" {text}" if text else "")
     b.setIconSize(QSize(14, 14))
     b.setToolTip(tooltip)
-    b.setCursor(Qt.PointingHandCursor)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
     return b
 
 
 # --- images (logos, photos) --------------------------------------------------
 def rounded_pixmap(pix: QPixmap, size: int, circle=False) -> QPixmap:
-    pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    pix = pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     if not circle:
         return pix
     out = QPixmap(size, size)
-    out.fill(Qt.transparent)
+    out.fill(Qt.GlobalColor.transparent)
     p = QPainter(out)
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
     path = QPainterPath()
     path.addEllipse(0, 0, size, size)
     p.setClipPath(path)
@@ -370,7 +377,8 @@ class DataFrameModel(QAbstractTableModel):
     def refresh_icons(self):
         for c, name in enumerate(self._df.columns):
             if name in self._icons and len(self._df):
-                self.dataChanged.emit(self.index(0, c), self.index(len(self._df) - 1, c), [Qt.DecorationRole])
+                self.dataChanged.emit(self.index(0, c), self.index(len(self._df) - 1, c),
+                                      [Qt.ItemDataRole.DecorationRole])
 
     def rowCount(self, parent=_ROOT):
         return 0 if parent.isValid() else len(self._df)
@@ -379,13 +387,14 @@ class DataFrameModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self._df.columns)
 
     _NUMBER = (int, float, np.integer, np.floating)
-    _RIGHT = int(Qt.AlignRight | Qt.AlignVCenter)
-    _LEFT = int(Qt.AlignLeft | Qt.AlignVCenter)
+    _RIGHT = int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    _LEFT = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     # rôles en entiers : comparer un entier à une énumération Qt est lent en Python (appelé des milliers de fois)
-    _DISPLAY, _USER, _ALIGN = Qt.DisplayRole.value, Qt.UserRole.value, Qt.TextAlignmentRole.value
-    _DECORATION, _FOREGROUND = Qt.DecorationRole.value, Qt.ForegroundRole.value
+    _DISPLAY, _USER = Qt.ItemDataRole.DisplayRole.value, Qt.ItemDataRole.UserRole.value
+    _ALIGN, _DECORATION = Qt.ItemDataRole.TextAlignmentRole.value, Qt.ItemDataRole.DecorationRole.value
+    _FOREGROUND = Qt.ItemDataRole.ForegroundRole.value
 
-    def data(self, index, role=Qt.DisplayRole):
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         role = getattr(role, "value", role)
         if role not in (self._DISPLAY, self._USER, self._ALIGN, self._DECORATION, self._FOREGROUND):
             return None  # rôles non gérés (police, infobulle…) : réponse immédiate
@@ -412,10 +421,10 @@ class DataFrameModel(QAbstractTableModel):
                 return QColor(c) if c else None
         return None
 
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role != Qt.DisplayRole:
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
             return None
-        if orientation == Qt.Horizontal:
+        if orientation == Qt.Orientation.Horizontal:
             return str(self._columns[section])
         return str(section + 1)
 
@@ -442,13 +451,13 @@ class DataTable(QTableView):
         self.model_ = DataFrameModel(self)
         self.proxy = QSortFilterProxyModel(self)
         self.proxy.setSourceModel(self.model_)
-        self.proxy.setSortRole(Qt.UserRole)
+        self.proxy.setSortRole(Qt.ItemDataRole.UserRole)
         self.setModel(self.proxy)
         self.setSortingEnabled(True)
         self.setAlternatingRowColors(True)
         self.setShowGrid(False)
-        self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setIconSize(QSize(18, 18))
         self.verticalHeader().setDefaultSectionSize(30)
         self.verticalHeader().setVisible(False)
@@ -478,7 +487,7 @@ class DataTable(QTableView):
             self.sortByColumn(list(df.columns).index(sort_name), sort_order)
         else:
             self.proxy.sort(-1)
-            header.setSortIndicator(-1, Qt.AscendingOrder)
+            header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 
     def selected_record(self) -> pd.Series | None:
         rows = self.selectionModel().selectedRows()

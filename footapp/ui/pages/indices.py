@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from ...analysis import composite_index, per90
 from ...config import ALL_PLAYER_METRICS, INDEX_PRESETS, POSITIONS
 from .. import charts
-from ..widgets import Card, ChartWidget, DataTable, chart_card, icon, table_card, tool_button
+from ..widgets import Card, ChartWidget, DataTable, chart_card, icon, named, table_card, tool_button
 from . import Page, scope_combo
 from .players import metric_combo
 
@@ -43,21 +43,21 @@ class WeightRow(QWidget):
         super().__init__()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.metric = metric_combo(ALL_PLAYER_METRICS, key)
-        self.metric.setMinimumWidth(300)
+        self.metric_box = metric_combo(ALL_PLAYER_METRICS, key)
+        self.metric_box.setMinimumWidth(300)
         self.weight = QSpinBox(minimum=1, maximum=100, value=int(weight), prefix="poids ")
         remove = QPushButton(icon("fa5s.times"), "")
         remove.setFixedWidth(34)
         remove.setToolTip("Retirer cette métrique")
-        for w in (self.metric, self.weight, remove):
+        for w in (self.metric_box, self.weight, remove):
             lay.addWidget(w)
         lay.addStretch()
-        self.metric.currentIndexChanged.connect(on_change)
+        self.metric_box.currentIndexChanged.connect(on_change)
         self.weight.valueChanged.connect(on_change)
         remove.clicked.connect(lambda: on_remove(self))
 
     def value(self):
-        return self.metric.currentData(), self.weight.value()
+        return self.metric_box.currentData(), self.weight.value()
 
 
 class IndicesPage(Page):
@@ -73,9 +73,9 @@ class IndicesPage(Page):
 
         export = tool_button("Exporter", "fa5s.file-export")
         export.clicked.connect(lambda: self.table.export(f"indice_{self.index_box.currentText()}"))
-        self.header.actions.addWidget(export)
+        self.header.action_bar.addWidget(export)
 
-        self.index_box = QComboBox()
+        self.index_box: QComboBox = QComboBox()
         self.index_box.setMinimumWidth(200)
         new = tool_button("Nouveau", "fa5s.plus")
         save = tool_button("Enregistrer", "fa5s.save")
@@ -92,8 +92,8 @@ class IndicesPage(Page):
         for w in (QLabel("Indice"), self.index_box, new, save, delete):
             row.addWidget(w)
         row.addSpacing(16)
-        for w in (QLabel("Référentiel"), self.scope, self.position, QLabel("Min."), self.min_minutes):
-            row.addWidget(w)
+        for widget in (QLabel("Référentiel"), self.scope, self.position, QLabel("Min."), self.min_minutes):
+            row.addWidget(widget)
         row.addStretch()
         top.body.addLayout(row)
         self.body.addWidget(top)
@@ -101,7 +101,7 @@ class IndicesPage(Page):
         self.weights_box = QVBoxLayout()
         add = tool_button("Ajouter une métrique", "fa5s.plus")
         add.clicked.connect(lambda: self._add_row())
-        self.weights_hint = QLabel(objectName="Muted")
+        self.weights_hint = named(QLabel(), "Muted")
         comp = Card("Composition", "les poids sont relatifs (ramenés à 100 %)")
         comp.body.addLayout(self.weights_box)
         bottom = QHBoxLayout()
@@ -110,12 +110,12 @@ class IndicesPage(Page):
         comp.body.addLayout(bottom)
         self.body.addWidget(comp)
 
-        self.table = DataTable()
+        self.table: DataTable = DataTable()
         self.table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         self.table.row_activated.connect(lambda r: state.open_player.emit(int(r["player_id"])))
         state.images.loaded.connect(lambda *_: self.table.model_.refresh_icons())
         self.chart = ChartWidget()
-        results = QSplitter(Qt.Horizontal)
+        results = QSplitter(Qt.Orientation.Horizontal)
         results.addWidget(table_card(self.table, "Classement", "indice de 0 à 100 · double-clic : fiche joueur"))
         results.addWidget(chart_card(self.chart))
         results.setSizes([720, 480])
@@ -200,7 +200,8 @@ class IndicesPage(Page):
                                                         "supprimés (mais vous pouvez les modifier et les enregistrer "
                                                         "sous un autre nom).")
             return
-        if QMessageBox.question(self, "Supprimer", f"Supprimer l'indice « {name} » ?") != QMessageBox.Yes:
+        answer = QMessageBox.question(self, "Supprimer", f"Supprimer l'indice « {name} » ?")
+        if answer != QMessageBox.StandardButton.Yes:
             return
         saved.pop(name)
         self.state.settings.setValue("indices", json.dumps(saved))

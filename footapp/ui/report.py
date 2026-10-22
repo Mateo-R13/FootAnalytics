@@ -4,6 +4,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
+from matplotlib.transforms import Bbox
 from PySide6.QtGui import QImage
 
 from ..config import APP_NAME, APP_VERSION
@@ -15,7 +16,7 @@ A4 = (11.69, 8.27)  # paysage, en pouces
 def pixmap_to_array(pixmap) -> np.ndarray | None:
     if pixmap is None or pixmap.isNull():
         return None
-    img = pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+    img = pixmap.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     ptr = img.constBits()
     return np.array(ptr, dtype=np.uint8).reshape(img.height(), img.width(), 4)
 
@@ -31,7 +32,7 @@ def cover(title: str, subtitle: str, facts: list[tuple[str, str]], kpis: list[tu
     fig.text(0.06, 0.88, title, fontsize=26, weight="bold", color=theme.INK)
     fig.text(0.06, 0.83, subtitle, fontsize=12, color=theme.INK2)
     if image is not None:
-        ax = fig.add_axes([0.83, 0.75, 0.11, 0.17])
+        ax = fig.add_axes((0.83, 0.75, 0.11, 0.17))
         ax.imshow(image)
         ax.axis("off")
     # chiffres clés en tuiles
@@ -70,7 +71,7 @@ def table_pages(df: pd.DataFrame, title: str, rows_per_page: int = 28) -> list[F
         fig = Figure(figsize=A4, facecolor=theme.SURFACE)
         fig.text(0.04, 0.94, title + (f" ({start // rows_per_page + 1})" if len(df) > rows_per_page else ""),
                  fontsize=14, weight="bold", color=theme.INK)
-        ax = fig.add_axes([0.04, 0.06, 0.92, 0.84])
+        ax = fig.add_axes((0.04, 0.06, 0.92, 0.84))
         ax.axis("off")
         if not chunk.empty:
             # largeur des colonnes proportionnelle au texte le plus long (bornée)
@@ -138,9 +139,9 @@ def tables_page(title: str, blocks: list[tuple[str, pd.DataFrame]], note: str = 
         if d.empty:
             continue
         height = (len(d) + 1) * row_h
-        ax = fig.add_axes([0.04, top - height + 0.01, 0.92, height])
+        ax = fig.add_axes((0.04, top - height + 0.01, 0.92, height))
         ax.axis("off")
-        t = ax.table(cellText=_cells(d), colLabels=list(d.columns), bbox=[0, 0, 1, 1], cellLoc="left",
+        t = ax.table(cellText=_cells(d), colLabels=list(d.columns), bbox=Bbox.from_bounds(0, 0, 1, 1), cellLoc="left",
                      colLoc="left")
         t.auto_set_font_size(False)
         t.set_fontsize(7.5)
@@ -166,6 +167,6 @@ def save(path: str, figures: list[Figure]):
             try:
                 pdf.savefig(fig, facecolor=fig.get_facecolor())
             finally:
-                fig.set_size_inches(original)
+                fig.set_size_inches(original[0], original[1])
                 if fig.canvas is not None:
                     fig.canvas.draw_idle()

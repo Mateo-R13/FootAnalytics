@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import charts, theme
-from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, table_card
+from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, named, table_card
 from . import Page
 
 # (titre, métrique, icône, couleur, minutes minimum)
@@ -48,7 +48,7 @@ class LeaderCard(Card):
         ic = QLabel()
         ic.setPixmap(icon(icon_name, color).pixmap(16, 16))
         head.addWidget(ic)
-        head.addWidget(QLabel(title, objectName="CardTitle"))
+        head.addWidget(named(QLabel(title), "CardTitle"))
         head.addStretch()
         self.body.addLayout(head)
         self.grid = QGridLayout()
@@ -58,20 +58,20 @@ class LeaderCard(Card):
         self.body.addStretch()
         self.rows = []
         for i in range(5):
-            rank = QLabel(str(i + 1), objectName="Muted")
+            rank = named(QLabel(str(i + 1)), "Muted")
             logo = QLabel()
             logo.setFixedSize(18, 18)
-            name = QLabel(objectName="LeaderName")
-            name.setTextFormat(Qt.RichText)
+            name = named(QLabel(), "LeaderName")
+            name.setTextFormat(Qt.TextFormat.RichText)
             name.linkActivated.connect(lambda pid: self.state.open_player.emit(int(pid)))
-            name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # coupe plutôt que d'élargir
-            value = QLabel(objectName="LeaderValue")
-            value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # coupe plutôt que d'élargir
+            value = named(QLabel(), "LeaderValue")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             for c, w in enumerate((rank, logo, name, value)):
                 self.grid.addWidget(w, i, c)
             self.rows.append((rank, logo, name, value))
         self.grid.setColumnStretch(2, 1)
-        self.team_ids = [None] * 5
+        self.team_ids: list[int | None] = [None] * 5
         state.images.loaded.connect(self._refresh_logos)
 
     def update_data(self, df: pd.DataFrame):
@@ -93,7 +93,7 @@ class LeaderCard(Card):
         self._refresh_logos()
 
     def _refresh_logos(self, *_):
-        for tid, (_, logo, _, _) in zip(self.team_ids, self.rows, strict=True):
+        for tid, (_rank, logo, _name, _value) in zip(self.team_ids, self.rows, strict=True):
             pix = self.state.logo("team", tid) if tid else None
             logo.setPixmap(pix) if pix else logo.clear()
 
@@ -142,7 +142,7 @@ class DashboardPage(Page):
         state.images.loaded.connect(lambda *_: (self.table.model_.refresh_icons(),
                                                 self.watch_table.model_.refresh_icons()))
         self.chart = ChartWidget()
-        bottom = QSplitter(Qt.Horizontal)
+        bottom = QSplitter(Qt.Orientation.Horizontal)
         bottom.addWidget(table_card(self.table, "Classement", "top 8"))
         bottom.addWidget(chart_card(self.chart))
         bottom.setSizes([420, 700])
@@ -151,7 +151,7 @@ class DashboardPage(Page):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(content)
         self.body.addWidget(scroll)
 
@@ -176,7 +176,7 @@ class DashboardPage(Page):
         leader = df.sort_values("Pos").iloc[0]
         self.k_leader.set(leader["Équipe"], f"{leader['Pts']} pts · {leader['G']}V {leader['N']}N {leader['P']}D")
         self.k_leader.value.setStyleSheet("font-size: 15pt;")
-        self.k_leader.value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.k_leader.value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         top = df.sort_values("Pos").head(8)[["Pos", "Équipe", "J", "Diff", "Pts", "team_id"]]
         self.table.set_dataframe(top)
         self._update_xg()

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from ...analysis import AGE_REF, composite_index, per90, value_model
 from ...config import ALL_PLAYER_METRICS, POSITION_TEMPLATES, POSITIONS
 from .. import charts
-from ..widgets import Card, ChartWidget, DataTable, chart_card, signed_color, table_card, tool_button
+from ..widgets import Card, ChartWidget, DataTable, chart_card, named, signed_color, table_card, tool_button
 from . import Page, scope_combo
 from .indices import all_indices
 from .players import metric_combo
@@ -129,13 +129,13 @@ class ValuePage(Page):
         super().__init__(state)
         export = tool_button("Exporter", "fa5s.file-export")
         export.clicked.connect(lambda: self.all_table.export("valeur_vs_performance"))
-        self.header.actions.addWidget(export)
+        self.header.action_bar.addWidget(export)
 
         self.scope = scope_combo()
         self.score_box = QComboBox()
         self.score_box.setMinimumWidth(190)
-        self.metric = metric_combo(ALL_PLAYER_METRICS, "expectedAssists")
-        self.metric.setMinimumWidth(240)
+        self.metric_box = metric_combo(ALL_PLAYER_METRICS, "expectedAssists")
+        self.metric_box.setMinimumWidth(240)
         self.position = QComboBox()
         self.position.addItem("Joueurs de champ", "outfield")
         self.position.addItem("Tous les postes", None)
@@ -150,7 +150,7 @@ class ValuePage(Page):
         self.filters = ProfileFilters()
         top = Card(margins=10)
         row = QHBoxLayout()
-        for w in (QLabel("Référentiel"), self.scope, QLabel("Score"), self.score_box, self.metric,
+        for w in (QLabel("Référentiel"), self.scope, QLabel("Score"), self.score_box, self.metric_box,
                   self.position, QLabel("Min."), self.min_minutes, self.use_age):
             row.addWidget(w)
         row.addStretch()
@@ -163,7 +163,9 @@ class ValuePage(Page):
         self.body.addWidget(top)
 
         self.chart = ChartWidget()
-        self.under_table, self.over_table, self.all_table = DataTable(), DataTable(), DataTable()
+        self.under_table: DataTable = DataTable()
+        self.over_table: DataTable = DataTable()
+        self.all_table: DataTable = DataTable()
         self.tabs = QTabWidget()
         for table, label in ((self.under_table, "Sous-évalués"), (self.over_table, "Surévalués"),
                              (self.all_table, "Tous")):
@@ -174,21 +176,21 @@ class ValuePage(Page):
             self.tabs.addTab(table_card(table), label)
         state.images.loaded.connect(lambda *_: [t.model_.refresh_icons()
                                                 for t in (self.under_table, self.over_table, self.all_table)])
-        results = QSplitter(Qt.Horizontal)
+        results = QSplitter(Qt.Orientation.Horizontal)
         results.addWidget(chart_card(self.chart, "Valeur estimée vs score",
                                      "survolez un point · z = écart à l'attendu en écarts types robustes"))
         results.addWidget(self.tabs)
         results.setSizes([560, 720])
         self.body.addWidget(results, 1)
-        self.status = QLabel(objectName="Muted")
-        self.status.setTextFormat(Qt.PlainText)
+        self.status = named(QLabel(), "Muted")
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         self.body.addWidget(self.status)
 
         self._fill_scores()
         self.scope.currentIndexChanged.connect(self._on_scope)
         self.score_box.activated.connect(self._on_score)
-        self.metric.currentIndexChanged.connect(self.run)
+        self.metric_box.currentIndexChanged.connect(self.run)
         self.position.currentIndexChanged.connect(self.run)
         self.min_minutes.valueChanged.connect(self.run)
         self.use_age.toggled.connect(self.run)
@@ -208,10 +210,10 @@ class ValuePage(Page):
             self.score_box.addItem(f"Indice « {name} »", f"index:{name}")
         self.score_box.addItem("Une métrique (centile /90)", "metric")
         self.score_box.setCurrentIndex(max(0, self.score_box.findData(current)))
-        self.metric.setVisible(self.score_box.currentData() == "metric")
+        self.metric_box.setVisible(self.score_box.currentData() == "metric")
 
     def _on_score(self):
-        self.metric.setVisible(self.score_box.currentData() == "metric")
+        self.metric_box.setVisible(self.score_box.currentData() == "metric")
         self.run()
 
     def showEvent(self, event):
@@ -230,7 +232,7 @@ class ValuePage(Page):
             out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
             return out.rename(columns={"index": "score"}), "Profil du poste (0-100)"
         if kind == "metric":
-            key = self.metric.currentData()
+            key = self.metric_box.currentData()
             out = composite_index(per90(pool), [(key, 1)])
             return out.rename(columns={"index": "score"}), f"{ALL_PLAYER_METRICS[key][0]} (centile)"
         name = str(kind).removeprefix("index:")

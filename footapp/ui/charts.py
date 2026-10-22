@@ -1,13 +1,26 @@
-"""Fonctions de tracé. Chacune dessine dans un ChartWidget."""
+"""Fonctions de tracé. Chacune dessine dans un ChartWidget (ou un report.PrintChart pour le PDF)."""
+from typing import Any, Protocol, cast
+
 import numpy as np
 import pandas as pd
+from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.projections.polar import PolarAxes
 from matplotlib.ticker import FuncFormatter
 
 from ..config import SHOT_BODY_PARTS, SHOT_OUTCOMES, SHOT_SITUATIONS
 from . import pitch, theme
-from .widgets import ChartWidget
+
+
+class Chart(Protocol):
+    """Support de dessin : widgets.ChartWidget (écran) ou report.PrintChart (PDF)."""
+    figure: Figure
+
+    def clear(self) -> Figure: ...
+    def draw(self) -> None: ...
+    def message(self, text: str) -> None: ...
+    def add_hover(self, ax: Any, collection: Any, labels: list[str]) -> None: ...
 
 
 def _num(v, decimals=2) -> str:
@@ -29,7 +42,7 @@ def _draw_pitch(ax, line_zorder: float = 0.9):
 
 
 # --- classements & nuages de points ---------------------------------------
-def bar_ranking(chart: ChartWidget, labels, values, title, subtitle=None):
+def bar_ranking(chart: Chart, labels, values, title, subtitle=None):
     fig = chart.clear()
     if len(values) == 0:
         return chart.message("Aucune donnée")
@@ -45,7 +58,7 @@ def bar_ranking(chart: ChartWidget, labels, values, title, subtitle=None):
     ax.spines[["left", "bottom"]].set_visible(False)
     ax.tick_params(left=False, bottom=False)
     span = np.nanmax(np.abs(values)) or 1
-    for yi, v in zip(y, values, strict=True):
+    for yi, v in zip(y.tolist(), values, strict=True):
         ax.text(v + (0.01 * span if v >= 0 else -0.01 * span), yi, _num(v), va="center",
                 ha="left" if v >= 0 else "right", fontsize=8, color=theme.INK2)
     lo, hi = min(0, np.nanmin(values)), max(0, np.nanmax(values))
@@ -54,7 +67,7 @@ def bar_ranking(chart: ChartWidget, labels, values, title, subtitle=None):
     chart.draw()
 
 
-def scatter(chart: ChartWidget, df: pd.DataFrame, x: str, y: str, name_col: str, title: str,
+def scatter(chart: Chart, df: pd.DataFrame, x: str, y: str, name_col: str, title: str,
             highlight=(), extra_col=None, n_labels=8, subtitle=None, label_index=None):
     """label_index : index des points à étiqueter (par défaut : les profils les plus extrêmes)."""
     fig = chart.clear()
@@ -95,7 +108,7 @@ def _plain(text) -> str:
     return str(text).replace("$", r"\$")
 
 
-def role_map(chart: ChartWidget, table: pd.DataFrame, names: list[str], player_id, axis_labels: tuple[str, str],
+def role_map(chart: Chart, table: pd.DataFrame, names: list[str], player_id, axis_labels: tuple[str, str],
              title: str, subtitle: str):
     """Carte des profils types d'un poste : 2 premiers axes de l'ACP, une couleur par groupe (ordre fixe),
     joueur `player_id` mis en évidence. table : sortie de analysis.player_roles pour ce poste."""
@@ -130,7 +143,7 @@ def role_map(chart: ChartWidget, table: pd.DataFrame, names: list[str], player_i
     chart.draw()
 
 
-def value_scatter(chart: ChartWidget, df: pd.DataFrame, score_label: str, title: str, subtitle: str,
+def value_scatter(chart: Chart, df: pd.DataFrame, score_label: str, title: str, subtitle: str,
                   curve: tuple | None = None, n_top: int = 6, n_bottom: int = 3):
     """Valeur estimée (M€, échelle log) vs score. df : player, team, value, score, expected, z.
 
@@ -170,12 +183,12 @@ def value_scatter(chart: ChartWidget, df: pd.DataFrame, score_label: str, title:
     chart.draw()
 
 
-def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, list]], title, subtitle):
+def radar(chart: Chart, params: list[str], players: list[tuple[str, list, list]], title, subtitle):
     """players : [(nom, percentiles 0-100, valeurs brutes)] - 2 joueurs max."""
     fig = chart.clear()
     # placement manuel : titre, sous-titre et légende au-dessus, radar en dessous sans chevauchement
     fig.set_layout_engine("none")
-    ax = fig.add_axes([0.15, 0.09, 0.70, 0.68], projection="polar")
+    ax = cast(PolarAxes, fig.add_axes((0.15, 0.09, 0.70, 0.68), projection="polar"))
     n = len(params)
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
     ax.set_theta_offset(np.pi / 2)
@@ -187,9 +200,9 @@ def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, 
     ax.grid(color=theme.GRID, lw=0.8)
     ax.spines["polar"].set_color(theme.AXIS)
     handles = []
-    for (name, pct, raw), color in zip(players, theme.SERIES, strict=False):  # au plus 2 joueurs pour 3 couleurs
+    for (name, pcts, raw), color in zip(players, theme.SERIES, strict=False):  # au plus 2 joueurs pour 3 couleurs
         # centile manquant : point absent (tracé à 0, il passerait pour le plus faible de tous)
-        pct = np.asarray(pct, dtype=float)
+        pct = np.asarray(pcts, dtype=float)
         ok = ~np.isnan(pct)
         closed = np.r_[pct[ok], pct[ok][:1]]
         ang = np.r_[angles[ok], angles[ok][:1]]
@@ -206,7 +219,7 @@ def radar(chart: ChartWidget, params: list[str], players: list[tuple[str, list, 
 
 
 # --- match -----------------------------------------------------------------
-def match_stats(chart: ChartWidget, stats: pd.DataFrame, labels: dict[str, str], home: str, away: str):
+def match_stats(chart: Chart, stats: pd.DataFrame, labels: dict[str, str], home: str, away: str):
     """stats : lignes à afficher (colonnes home/away texte + valeurs) ; labels : clé -> libellé FR."""
     fig = chart.clear()
     if stats.empty:
@@ -235,7 +248,7 @@ def match_stats(chart: ChartWidget, stats: pd.DataFrame, labels: dict[str, str],
     chart.draw()
 
 
-def percentile_bars(chart: ChartWidget, rows: pd.DataFrame, title: str, subtitle: str):
+def percentile_bars(chart: Chart, rows: pd.DataFrame, title: str, subtitle: str):
     """rows : colonnes label, value (texte), pct (0-100). Barres sur une piste 0-100."""
     fig = chart.clear()
     if rows.empty:
@@ -248,7 +261,7 @@ def percentile_bars(chart: ChartWidget, rows: pd.DataFrame, title: str, subtitle
     ax.barh(y, [100] * n, height=0.62, color=theme.GRID)
     ax.barh(y, pct, height=0.62, color=colors)
     ax.axvline(50, color=theme.AXIS, lw=1, ls="--")
-    for yi, p, v in zip(y, pct, rows["value"], strict=True):
+    for yi, p, v in zip(y.tolist(), pct, rows["value"], strict=True):
         ax.text(102, yi, f"{p:.0f}e", va="center", fontsize=8.5, color=theme.INK, weight="bold")
         ax.text(113, yi, v, va="center", fontsize=8.5, color=theme.INK2)
     ax.set_yticks(y, rows["label"], fontsize=8.5)
@@ -265,7 +278,7 @@ def percentile_bars(chart: ChartWidget, rows: pd.DataFrame, title: str, subtitle
     chart.draw()
 
 
-def rating_timeline(chart: ChartWidget, matches: pd.DataFrame, title: str):
+def rating_timeline(chart: Chart, matches: pd.DataFrame, title: str):
     fig = chart.clear()
     played = matches[matches["Minutes"] > 0].dropna(subset=["Note"]) if not matches.empty else matches
     if played.empty:
@@ -318,7 +331,7 @@ def _season_line(ax, chart, d: pd.DataFrame, y: str, color: str, label: str, hov
     return Line2D([], [], color=color, lw=lw, ls=ls, marker="o", markersize=5, label=label)
 
 
-def season_evolution(chart: ChartWidget, evo: pd.DataFrame, metric_label: str, title: str, subtitle: str,
+def season_evolution(chart: Chart, evo: pd.DataFrame, metric_label: str, title: str, subtitle: str,
                      mean: float = np.nan):
     """Métrique saison par saison : championnat (et coupes d'Europe). Saisons non fiables : points creux et
     segments en pointillés ; moyenne pondérée des saisons fiables du championnat en pointillés fins."""
@@ -378,7 +391,7 @@ _HISTORY_PANELS = [
 ]
 
 
-def team_history(chart: ChartWidget, hist: pd.DataFrame, title: str, subtitle: str):
+def team_history(chart: Chart, hist: pd.DataFrame, title: str, subtitle: str):
     """4 petits graphiques saison par saison : points, buts pour, buts contre, PPDA, avec la moyenne de la ligue.
     Saison en cours en points creux."""
     fig = chart.clear()
@@ -435,7 +448,7 @@ def team_history(chart: ChartWidget, hist: pd.DataFrame, title: str, subtitle: s
     chart.draw()
 
 
-def cumulative_xg(chart: ChartWidget, shots: pd.DataFrame, home: str, away: str):
+def cumulative_xg(chart: Chart, shots: pd.DataFrame, home: str, away: str):
     """Courbe en escalier des xG cumulés de chaque équipe, buts marqués."""
     fig = chart.clear()
     if shots.empty:
@@ -471,7 +484,7 @@ def cumulative_xg(chart: ChartWidget, shots: pd.DataFrame, home: str, away: str)
     chart.draw()
 
 
-def diverging_bars(chart: ChartWidget, labels, values, title: str, subtitle: str,
+def diverging_bars(chart: Chart, labels, values, title: str, subtitle: str,
                    pos_label: str, neg_label: str):
     """Barres horizontales autour de zéro : positif en bleu, négatif en rouge."""
     fig = chart.clear()
@@ -483,7 +496,7 @@ def diverging_bars(chart: ChartWidget, labels, values, title: str, subtitle: str
     ax.barh(y, values, height=0.66, color=[theme.DIV_HIGH if v >= 0 else theme.DIV_LOW for v in values])
     ax.axvline(0, color=theme.AXIS, lw=1)
     span = np.nanmax(np.abs(values)) or 1
-    for yi, v in zip(y, values, strict=True):
+    for yi, v in zip(y.tolist(), values, strict=True):
         ax.text(v + (0.02 if v >= 0 else -0.02) * span, yi, f"{v:+.1f}", va="center",
                 ha="left" if v >= 0 else "right", fontsize=8, color=theme.INK2)
     ax.set_yticks(y, labels, fontsize=8.5)
@@ -499,7 +512,7 @@ def diverging_bars(chart: ChartWidget, labels, values, title: str, subtitle: str
     chart.draw()
 
 
-def _form_axes(chart: ChartWidget, ax, form: pd.DataFrame, window: int, legend_size: float = 8.5) -> str:
+def _form_axes(chart: Chart, ax, form: pd.DataFrame, window: int, legend_size: float = 8.5) -> str:
     """Forme match par match d'une équipe dans `ax` ; renvoie la base utilisée (xG ou buts)."""
     x = np.arange(len(form))
     has_xg = form["xg"].notna().any()
@@ -524,7 +537,7 @@ def _form_axes(chart: ChartWidget, ax, form: pd.DataFrame, window: int, legend_s
     return "xG" if has_xg else "buts (xG indisponibles)"
 
 
-def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
+def team_form(chart: Chart, form: pd.DataFrame, team: str, window: int):
     fig = chart.clear()
     if form.empty:
         return chart.message("Aucun match joué")
@@ -534,7 +547,7 @@ def team_form(chart: ChartWidget, form: pd.DataFrame, team: str, window: int):
     chart.draw()
 
 
-def form_pair(chart: ChartWidget, forms: list[tuple[str, pd.DataFrame]], window: int, last: int = 10):
+def form_pair(chart: Chart, forms: list[tuple[str, pd.DataFrame]], window: int, last: int = 10):
     """Forme des deux équipes d'un match, l'une sous l'autre (`last` derniers matchs de la compétition)."""
     fig = chart.clear()
     forms = [(team, form.tail(last)) for team, form in forms if form is not None and not form.empty]
@@ -548,7 +561,7 @@ def form_pair(chart: ChartWidget, forms: list[tuple[str, pd.DataFrame]], window:
     chart.draw()
 
 
-def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
+def prediction(chart: Chart, pred: dict | None, home: str, away: str):
     fig = chart.clear()
     if not pred:
         return chart.message("Pas assez de matchs joués pour un pronostic")
@@ -589,7 +602,7 @@ def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
     scores = pred["top_scores"]
     y = np.arange(len(scores))
     ax3.barh(y, [p * 100 for _, p in scores], color=theme.HOME, height=0.6)
-    for yi, (_score, p) in zip(y, scores, strict=True):
+    for yi, (_score, p) in zip(y.tolist(), scores, strict=True):
         ax3.text(p * 100 + 0.3, yi, f"{p:.0%}", va="center", fontsize=8.5, color=theme.INK2)
     ax3.set_yticks(y, [s for s, _ in scores])
     ax3.invert_yaxis()
@@ -604,7 +617,7 @@ def prediction(chart: ChartWidget, pred: dict, home: str, away: str):
     chart.draw()
 
 
-def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: str, calib_old=None):
+def calibration(chart: Chart, calib: pd.DataFrame, title: str, subtitle: str, calib_old=None):
     """Probabilité annoncée vs fréquence observée : un modèle bien calibré suit la diagonale.
     calib_old : même courbe pour l'ancien modèle (pointillés), pour comparaison."""
     fig = chart.clear()
@@ -634,7 +647,7 @@ def calibration(chart: ChartWidget, calib: pd.DataFrame, title: str, subtitle: s
     chart.draw()
 
 
-def model_comparison(chart: ChartWidget, summary: dict):
+def model_comparison(chart: Chart, summary: dict):
     """Score de Brier (et log-loss) du modèle actuel, de l'ancien modèle et de la référence naïve : plus court =
     meilleur. Axe resserré autour des valeurs : les écarts se jouent à quelques centièmes."""
     fig = chart.clear()
@@ -649,7 +662,7 @@ def model_comparison(chart: ChartWidget, summary: dict):
     ax.barh(y, values, height=0.6, color=[r[3] for r in rows], edgecolor=theme.SURFACE, linewidth=1)
     ax.set_yticks(y, [r[0] for r in rows], fontsize=9)
     ax.invert_yaxis()
-    for yi, (_, brier, ll, _) in zip(y, rows, strict=True):
+    for yi, (_, brier, ll, _) in zip(y.tolist(), rows, strict=True):
         ax.text(brier + 0.002, yi, f"{brier:.3f}  (log-loss {ll:.3f})", va="center", fontsize=8.5, color=theme.INK2)
     lo = min(values) - 0.03
     ax.set_xlim(lo, max(values) + 0.045)
@@ -676,7 +689,7 @@ def _shot_xy(df, is_home):
     return df["x"], df["y"]
 
 
-def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, home: str, away: str):
+def shotmap(chart: Chart, shots: pd.DataFrame, momentum: pd.DataFrame, home: str, away: str):
     fig = chart.clear()
     if shots.empty:
         return chart.message("Pas de carte des tirs pour ce match")
@@ -700,7 +713,7 @@ def shotmap(chart: ChartWidget, shots: pd.DataFrame, momentum: pd.DataFrame, hom
                 f"{r.player} - {r.minute}'" + (f"+{int(r.added)}" if pd.notna(r.added) and r.added else "")
                 + f"\n{_shot_label(r.type)} · xG {_xg_text(r.xg)}\n{_situation(r.situation)} · {_body(r.body)}"
                 for r in subset.itertuples()])
-    marker = {"marker": "o", "ls": "", "markersize": 9}
+    marker: dict[str, Any] = {"marker": "o", "ls": "", "markersize": 9}
     ax.legend(handles=[
         Line2D([], [], **marker, markerfacecolor=theme.INK2, markeredgecolor=theme.SURFACE, label="But"),
         Line2D([], [], **marker, markerfacecolor="none", markeredgecolor=theme.INK2, label="Tir non marqué"),
@@ -759,7 +772,7 @@ _SEASON_OUTCOMES = [
 SMALL_SAMPLE = 10  # en dessous : avertissement « échantillon réduit »
 
 
-def season_shotmap(chart: ChartWidget, shots: pd.DataFrame, title: str, subtitle: str = ""):
+def season_shotmap(chart: Chart, shots: pd.DataFrame, title: str, subtitle: str = ""):
     """Tirs d'un joueur sur la saison, sur un demi-terrain vertical (but en haut). Penalties non représentés.
 
     Coordonnées Sofascore : x = distance au but visé, y = largeur (grand y = droite du tireur)."""
@@ -802,7 +815,7 @@ def season_shotmap(chart: ChartWidget, shots: pd.DataFrame, title: str, subtitle
     chart.draw()
 
 
-def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str, subtitle: str | None = None):
+def heatmap(chart: Chart, points: pd.DataFrame, title: str, subtitle: str | None = None):
     """Densité des positions. Sofascore : x vers le but adverse, y vers la GAUCHE de l'équipe. Sens du jeu
     vers la droite, la gauche de l'équipe est en haut : y se trace tel quel (et non 100 - y)."""
     fig = chart.clear()
@@ -818,7 +831,7 @@ def heatmap(chart: ChartWidget, points: pd.DataFrame, title: str, subtitle: str 
     chart.draw()
 
 
-def average_positions(chart: ChartWidget, positions: dict, home: str, away: str):
+def average_positions(chart: Chart, positions: dict, home: str, away: str):
     fig = chart.clear()
     if all(df.empty for df in positions.values()):
         return chart.message("Positions moyennes indisponibles")

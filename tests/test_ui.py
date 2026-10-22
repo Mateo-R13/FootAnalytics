@@ -261,7 +261,7 @@ def _open_prematch(qapp, w, upcoming):
 def test_avant_match_depuis_les_pronostics(qapp, window, upcoming, tmp_path):
     w, errors, crashes = window
     page = _open_prematch(qapp, w, upcoming)
-    assert page.event["id"] == upcoming["id"] and page.bundle
+    assert page.match_event["id"] == upcoming["id"] and page.bundle
     assert page.k_home.value.text().endswith("%") and page.k_goals.value.text() != "-"
     assert upcoming["home"] in page.match_box.currentText() and page.bundle["info"]["venue"] in page.info.text()
     assert page.pred_chart.figure.axes and page.form_chart.figure.axes
@@ -290,7 +290,7 @@ def test_avant_match_compositions_non_enregistrees(qapp, window, upcoming):
         pytest.skip("un seul match à venir enregistré")
     page.match_box.setCurrentIndex(page.match_box.findData(others[0]["id"]))
     wait_idle(qapp, w)
-    assert page.event["id"] == others[0]["id"]
+    assert page.match_event["id"] == others[0]["id"]
     assert "non communiquées" in page.absence_label.text()
     assert "aucune absence" not in page.absence_label.text().lower()
     assert page.absence_table.model_.dataframe().empty

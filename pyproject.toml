@@ -18,3 +18,19 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["footapp"]
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
+# pandas, QtAwesome… ne fournissent pas d'annotations exploitables : vus comme `Any`
+ignore_missing_imports = true
+
+# Cœur de l'application (données, calculs, accès réseau) : toutes les fonctions sont annotées
+[[tool.mypy.overrides]]
+module = ["footapp.analysis", "footapp.api.*", "footapp.updates", "footapp.config", "footapp.logs", "footapp.data"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true

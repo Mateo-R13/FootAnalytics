@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
 from . import theme
-from .widgets import icon
+from .widgets import icon, named
 
 MAX_RESULTS = 60
 
@@ -11,7 +11,7 @@ MAX_RESULTS = 60
 class CommandPalette(QDialog):
     def __init__(self, parent, entries_provider, on_choose):
         """entries_provider() -> [(type, libellé, détail, valeur)] ; on_choose(type, valeur)."""
-        super().__init__(parent, Qt.FramelessWindowHint | Qt.Popup)
+        super().__init__(parent, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Popup)
         self.entries_provider, self.on_choose = entries_provider, on_choose
         self.setObjectName("Palette")
         self.setStyleSheet(f"#Palette {{ background: {theme.CARD}; border: 1px solid {theme.BORDER}; "
@@ -20,11 +20,11 @@ class CommandPalette(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 10)
         self.search = QLineEdit(placeholderText="Rechercher un joueur, une équipe ou une page…")
-        self.search.addAction(icon("fa5s.search", theme.MUTED), QLineEdit.LeadingPosition)
+        self.search.addAction(icon("fa5s.search", theme.MUTED), QLineEdit.ActionPosition.LeadingPosition)
         self.search.setStyleSheet("font-size: 12pt; padding: 8px;")
         self.results = QListWidget()
         self.results.setMinimumHeight(360)
-        hint = QLabel("↑ ↓ pour naviguer · Entrée pour ouvrir · Échap pour fermer", objectName="Muted")
+        hint = named(QLabel("↑ ↓ pour naviguer · Entrée pour ouvrir · Échap pour fermer"), "Muted")
         lay.addWidget(self.search)
         lay.addWidget(self.results)
         lay.addWidget(hint)
@@ -37,14 +37,14 @@ class CommandPalette(QDialog):
         self.entries = self.entries_provider()
         self.search.clear()
         self._filter("")
-        parent = self.parentWidget()
-        self.move(parent.geometry().center().x() - self.width() // 2, parent.geometry().top() + 120)
+        if (parent := self.parentWidget()) is not None:
+            self.move(parent.geometry().center().x() - self.width() // 2, parent.geometry().top() + 120)
         self.show()
         self.search.setFocus()
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Down, Qt.Key_Up):
-            row = self.results.currentRow() + (1 if event.key() == Qt.Key_Down else -1)
+        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+            row = self.results.currentRow() + (1 if event.key() == Qt.Key.Key_Down else -1)
             self.results.setCurrentRow(max(0, min(row, self.results.count() - 1)))
             return
         super().keyPressEvent(event)
@@ -60,7 +60,7 @@ class CommandPalette(QDialog):
             if words and not all(w in haystack for w in words):
                 continue
             item = QListWidgetItem(icon(*icons[kind]), f"{label}    {detail}")
-            item.setData(Qt.UserRole, (kind, value))
+            item.setData(Qt.ItemDataRole.UserRole, (kind, value))
             self.results.addItem(item)
             shown += 1
             if shown >= MAX_RESULTS:
@@ -72,6 +72,6 @@ class CommandPalette(QDialog):
         item = self.results.currentItem()
         if item is None:
             return
-        kind, value = item.data(Qt.UserRole)
+        kind, value = item.data(Qt.ItemDataRole.UserRole)
         self.hide()
         self.on_choose(kind, value)

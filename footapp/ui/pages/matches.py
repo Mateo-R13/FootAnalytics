@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from ...config import LINEUP_BASE, LINEUP_GROUPS, MATCH_PERIODS, MATCH_STAT_GROUPS, MATCH_STAT_LABELS, MATCH_STATUS
 from .. import charts, report, theme
-from ..widgets import Card, ChartWidget, DataTable, chart_card, table_card, tool_button
+from ..widgets import Card, ChartWidget, DataTable, chart_card, named, table_card, tool_button
 from . import Page
 
 # Sélection « Essentiel » de l'onglet Statistiques (ordre d'affichage)
@@ -46,7 +46,7 @@ class MatchesPage(Page):
         self.live_timer.timeout.connect(self._live_tick)
         pdf = tool_button("Exporter PDF", "fa5s.file-pdf", "Rapport du match en PDF")
         pdf.clicked.connect(self.export_pdf)
-        self.header.actions.addWidget(pdf)
+        self.header.action_bar.addWidget(pdf)
 
         # --- liste des matchs
         self.round_box = QComboBox()
@@ -59,14 +59,14 @@ class MatchesPage(Page):
 
         # --- en-tête du match
         self.home_logo, self.away_logo = QLabel(), QLabel()
-        self.home_name = QLabel(objectName="CardTitle")
-        self.away_name = QLabel(objectName="CardTitle")
-        self.score = QLabel("-", objectName="PageTitle")
-        self.score.setAlignment(Qt.AlignCenter)
-        self.info = QLabel("Sélectionnez un match", objectName="Muted")
-        self.info.setAlignment(Qt.AlignCenter)
+        self.home_name = named(QLabel(), "CardTitle")
+        self.away_name = named(QLabel(), "CardTitle")
+        self.score = named(QLabel("-"), "PageTitle")
+        self.score.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info = named(QLabel("Sélectionnez un match"), "Muted")
+        self.info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         for label in (self.home_name, self.away_name, self.info):  # noms venus de l'API : texte brut
-            label.setTextFormat(Qt.PlainText)
+            label.setTextFormat(Qt.TextFormat.PlainText)
         head = Card(margins=12)
         line = QHBoxLayout()
         line.addStretch()
@@ -109,15 +109,15 @@ class MatchesPage(Page):
         export.clicked.connect(lambda: self.lineup_table.export("stats_match"))
         lineup_card = table_card(self.lineup_table)
         lbar = QHBoxLayout()
-        for w in (self.lineup_team, self.lineup_group):
-            lbar.addWidget(w)
+        for widget in (self.lineup_team, self.lineup_group):
+            lbar.addWidget(widget)
         lbar.addStretch()
         lbar.addWidget(export)
         lineup_card.body.insertLayout(0, lbar)
         lineup_card.setMinimumWidth(420)
         heat_card = chart_card(self.heatmap_chart, "Heatmap", "clic : heatmap · double-clic : fiche")
         heat_card.setMinimumWidth(400)
-        lineup_split = QSplitter(Qt.Horizontal)
+        lineup_split = QSplitter(Qt.Orientation.Horizontal)
         lineup_split.addWidget(lineup_card)
         lineup_split.addWidget(heat_card)
         lineup_split.setStretchFactor(0, 3)
@@ -196,7 +196,7 @@ class MatchesPage(Page):
             score = f"{e['home_score']} - {e['away_score']}" if played else e["date"].strftime("%H:%M")
             item = QListWidgetItem(f"{e['date']:%d/%m}  {e['home']}  {score}  {e['away']}"
                                    + ("   • en direct" if e["status"] == "inprogress" else ""))
-            item.setData(Qt.UserRole, e)
+            item.setData(Qt.ItemDataRole.UserRole, e)
             if not played:
                 item.setForeground(QColor(theme.MUTED))
             self.events_list.addItem(item)
@@ -213,7 +213,7 @@ class MatchesPage(Page):
     def _refresh_logos(self, *_):
         for i in range(self.events_list.count()):
             item = self.events_list.item(i)
-            pix = self.state.logo("team", item.data(Qt.UserRole)["home_id"])
+            pix = self.state.logo("team", item.data(Qt.ItemDataRole.UserRole)["home_id"])
             if pix:
                 item.setIcon(QIcon(pix))
         if self.bundle:
@@ -227,7 +227,7 @@ class MatchesPage(Page):
         self.live_timer.stop()
         if item is None:
             return
-        e = item.data(Qt.UserRole)
+        e = item.data(Qt.ItemDataRole.UserRole)
         played = e["status"] in ("finished", "inprogress")
         self._show_header(e)
         self.bundle = {"event": e}

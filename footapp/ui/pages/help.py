@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from ... import updates
 from ...config import APP_VERSION, CACHE_DIR, GITHUB_REPO, LOG_DIR
 from .. import theme
-from ..widgets import Card, tool_button
+from ..widgets import Card, named, tool_button
 from . import Page
 
 GLOSSARY = [
@@ -134,7 +134,7 @@ class HelpPage(Page):
         look.body.addLayout(row)
 
         # mises à jour
-        self.update_label = QLabel(f"Version installée : {APP_VERSION}", objectName="Muted")
+        self.update_label = named(QLabel(f"Version installée : {APP_VERSION}"), "Muted")
         self.update_label.setOpenExternalLinks(True)
         self.update_label.setWordWrap(True)
         check = tool_button("Vérifier", "fa5s.cloud-download-alt")
@@ -156,7 +156,7 @@ class HelpPage(Page):
             "12 h. « Actualiser » (en haut) vide le cache temporaire.</p>"
             f"<p style='color:{theme.MUTED}'>{CACHE_DIR}</p>")
         src.setWordWrap(True)
-        self.cache_label = QLabel(objectName="Muted")
+        self.cache_label = named(QLabel(), "Muted")
         clear = tool_button("Vider tout le cache", "fa5s.trash-alt", "Supprime aussi les matchs et images en cache")
         clear.clicked.connect(self._clear_cache)
         logs = tool_button("Journal", "fa5s.file-alt", f"Ouvrir le dossier du journal d'erreurs ({LOG_DIR})")
@@ -214,7 +214,7 @@ class HelpPage(Page):
     def _clear_cache(self):
         if QMessageBox.question(self, "Vider le cache",
                                 "Supprimer toutes les données en cache ? Elles seront retéléchargées au besoin.") \
-                != QMessageBox.Yes:
+                != QMessageBox.StandardButton.Yes:
             return
         self.state.data.client.clear_all_cache()
         self.cache_label.setText(f"Taille du cache : {self.state.data.client.cache_size_mb():.1f} Mo")

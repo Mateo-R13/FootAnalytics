@@ -35,7 +35,7 @@ class ComparePage(Page):
 
         self.radar_chart = ChartWidget()
         self.radar_table = DataTable()
-        radar_split = QSplitter(Qt.Horizontal)
+        radar_split = QSplitter(Qt.Orientation.Horizontal)
         radar_split.addWidget(chart_card(self.radar_chart))
         radar_split.addWidget(table_card(self.radar_table, "Détail", "valeurs par 90 min et centiles"))
         radar_split.setSizes([700, 480])
@@ -52,8 +52,8 @@ class ComparePage(Page):
         self.scatter_chart = ChartWidget()
         sc_card = chart_card(self.scatter_chart)
         sc_bar = QHBoxLayout()
-        for w in (QLabel("Axe X"), self.x_metric, QLabel("Axe Y"), self.y_metric, self.sc_position, self.sc_per90):
-            sc_bar.addWidget(w)
+        for widget in (QLabel("Axe X"), self.x_metric, QLabel("Axe Y"), self.y_metric, self.sc_position, self.sc_per90):
+            sc_bar.addWidget(widget)
         sc_bar.addStretch()
         sc_card.body.insertLayout(0, sc_bar)
 

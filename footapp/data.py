@@ -1,8 +1,10 @@
 """Accès aux données : appels API -> DataFrames pandas prêts à analyser."""
 import re
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from datetime import date, datetime
 from functools import partial
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -27,6 +29,7 @@ from .config import (
 )
 
 HOUR = 3600
+Progress = Callable[[str], None] | None  # rappel d'avancement (texte affiché dans la barre d'état)
 _SHOT_COLUMNS = ["event_id", "date", "opponent", "venue", "minute", "added", "type", "situation", "body",
                  "xg", "xgot", "x", "y"]
 
@@ -57,7 +60,7 @@ def _normalize_team(name: str) -> str:
     return " ".join(words) or plain
 
 
-def link_team_ids(names, standings: pd.DataFrame) -> dict:
+def link_team_ids(names: Iterable[str], standings: pd.DataFrame) -> dict:
     """Associe des noms d'équipes d'une autre source (Understat) aux team_id Sofascore du classement."""
     from difflib import SequenceMatcher
     if standings.empty or "team_id" not in standings:
@@ -110,10 +113,10 @@ def _side_value(stats: pd.DataFrame, key: str, side: str) -> float:
     return float(stats.at[key, f"{side}_value"])
 
 
-def _person(value) -> str:
+def _person(value: Any) -> str:
     """Nom d'un joueur dans un incident : selon les cas, Sofascore envoie un texte ou un objet {name: …}."""
     if isinstance(value, dict):
-        return value.get("name", "")
+        return str(value.get("name", ""))
     return value if isinstance(value, str) else ""
 
 
@@ -121,7 +124,7 @@ def _as_float(values: dict, key: str) -> float:
     return float(values.get(key) or 0)
 
 
-def _ratio(num, den, scale=1.0):
+def _ratio(num: Any, den: Any, scale: float = 1.0) -> np.ndarray:
     num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(den > 0, num / den * scale, np.nan)
@@ -145,14 +148,14 @@ def _slim_squad(data: dict) -> dict:
     return {"players": players}
 
 
-def _goals(score: dict | None):
+def _goals(score: dict | None) -> int | None:
     """Buts affichés d'un camp : `display` (hors tirs au but) ; `current` les inclut après une séance."""
     score = score or {}
     value = score.get("display")
     return score.get("current") if value is None else value
 
 
-def _result(gf, ga, winner, home: bool) -> str:
+def _result(gf: int | None, ga: int | None, winner: int | None, home: bool) -> str:
     """V / N / D du point de vue d'une équipe (winnerCode Sofascore : 1 domicile, 2 extérieur, 3 nul)."""
     if winner in (1, 2):
         return "V" if (winner == 1) == home else "D"
@@ -168,7 +171,7 @@ def _competition(e: dict) -> str:
     return (tour.get("uniqueTournament") or {}).get("name") or tour.get("name", "")
 
 
-def _timestamp(value):
+def _timestamp(value: Any) -> pd.Timestamp:
     return pd.to_datetime(value, unit="s") if isinstance(value, (int, float)) else pd.NaT
 
 
@@ -178,12 +181,13 @@ class FootData:
         self.understat = understat
 
     @contextmanager
-    def cache_first(self):
+    def cache_first(self) -> Iterator[None]:
         """Toutes les sources lisent leur cache même expiré dans ce bloc (affichage immédiat)."""
         with ExitStack() as stack:
             for source in (self.client, self.understat):
-                if hasattr(source, "cache_first"):
-                    stack.enter_context(source.cache_first())
+                cache_first = getattr(source, "cache_first", None)  # absent : source facultative ou factice
+                if cache_first is not None:
+                    stack.enter_context(cache_first())
             yield
 
     # --- compétition / saison --------------------------------------------
@@ -238,7 +242,7 @@ class FootData:
         return df
 
     # --- joueurs : saison ----------------------------------------------------
-    def player_season_stats(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
+    def player_season_stats(self, ut: int, sid: int, progress: Progress = None) -> pd.DataFrame:
         """Statistiques cumulées de tous les joueurs ; secours Understat si Sofascore est indisponible."""
         try:
             return self._player_season_stats(ut, sid, progress)
@@ -248,7 +252,7 @@ class FootData:
                 raise
             return fallback
 
-    def _player_season_stats(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
+    def _player_season_stats(self, ut: int, sid: int, progress: Progress = None) -> pd.DataFrame:
         fields = ",".join(PLAYER_METRICS)
         rows = []
         for code, pos_label in POSITIONS.items():
@@ -326,7 +330,7 @@ class FootData:
     PROFILE_COLUMNS = ("player_id", "value", "birth", "age", "contract_until", "height", "foot", "nationality",
                        "positions", "squad_team_id")
 
-    def squad_profiles(self, team_ids, progress=None) -> pd.DataFrame:
+    def squad_profiles(self, team_ids: Iterable[int], progress: Progress = None) -> pd.DataFrame:
         """Valeur estimée (Sofascore), âge, fin de contrat… des joueurs des effectifs ACTUELS : une requête par
         équipe. Une équipe en erreur est ignorée et comptée (attrs["missing_teams"]) ; après 3 échecs de suite
         (réseau coupé, blocage), les suivantes ne sont plus demandées."""
@@ -356,7 +360,7 @@ class FootData:
                     "player_id": int(p["id"]), "value": float(value) if value else np.nan,
                     "birth": _timestamp(p.get("dateOfBirthTimestamp")),
                     "contract_until": _timestamp(p.get("contractUntilTimestamp")),
-                    "height": p.get("height"), "foot": FEET.get(p.get("preferredFoot"), ""),
+                    "height": p.get("height"), "foot": FEET.get(p.get("preferredFoot") or "", ""),
                     "nationality": (p.get("country") or {}).get("name") or "",
                     "positions": "/".join(p.get("positionsDetailed") or []) or p.get("position") or "",
                     "squad_team_id": tid,
@@ -426,7 +430,7 @@ class FootData:
     SEASON_ROW_COLUMNS = ("Saison", "Compétition", "Équipe", "kind", "_start", "latest", "ut", "pos")
 
     def player_season_rows(self, pid: int, pos: str | None = None, max_requests: int = 16, league_seasons: int = 8,
-                           progress=None) -> pd.DataFrame:
+                           progress: Progress = None) -> pd.DataFrame:
         """Une ligne par compétition-saison jouée : toutes les métriques joueur (cumuls) + dérivées, avec Saison,
         Compétition, Équipe, kind (voir competition_kind ; sélection nationale -> "autre"), _start (année de
         début) et latest (dernière saison du joueur dans cette compétition).
@@ -444,7 +448,7 @@ class FootData:
                                 "latest": i == 0, "kind": kind, "start": _season_start(year)})
         recent = set(sorted({e["start"] for e in entries}, reverse=True)[:league_seasons])
 
-        def priority(e):
+        def priority(e: dict) -> int:
             if e["start"] in recent and e["kind"] in ("league", "europe"):
                 return 0 if e["kind"] == "league" else 1
             return 2
@@ -479,7 +483,7 @@ class FootData:
         rows = rows.sort_values("_start", ascending=False, kind="stable")
         minutes = rows["minutesPlayed"].fillna(0)
 
-        def per90(key):
+        def per90(key: str) -> pd.Series:
             return (rows[key] / minutes.where(minutes > 0) * 90).round(2)
 
         table = pd.DataFrame({
@@ -494,7 +498,7 @@ class FootData:
         }, index=rows.index)
         return table
 
-    def player_career(self, pid: int, max_seasons: int = 16, progress=None) -> pd.DataFrame:
+    def player_career(self, pid: int, max_seasons: int = 16, progress: Progress = None) -> pd.DataFrame:
         """Statistiques du joueur saison par saison, toutes compétitions confondues."""
         rows = self.player_season_rows(pid, max_requests=max_seasons, progress=progress)
         return self.career_table(rows).reset_index(drop=True)
@@ -504,7 +508,7 @@ class FootData:
         seasons = self.seasons(ut)
         return not seasons or seasons[0]["id"] == sid
 
-    def _player_season(self, pid: int, ut: int, sid: int, resource: str):
+    def _player_season(self, pid: int, ut: int, sid: int, resource: str) -> Any:
         # 2 requêtes par joueur-saison quel que soit le nombre de matchs ; saison passée -> cache permanent
         return self.client.get(f"/player/{pid}{_ut(ut, sid)}/{resource}", ttl=3 * HOUR,
                                permanent=not self._is_current_season(ut, sid))
@@ -600,7 +604,7 @@ class FootData:
         finished = event["status"] == "finished"
         ttl = 45 if event["status"] == "inprogress" else 120
 
-        def get(resource: str):
+        def get(resource: str) -> Any:
             return self.client.get(f"/event/{eid}{resource}", ttl=ttl, permanent=finished)
 
         lineups_raw = get("/lineups") or {}
@@ -621,7 +625,7 @@ class FootData:
         return pd.DataFrame(data.get("heatmap", []), columns=["x", "y"])
 
     @staticmethod
-    def _match_stats(data) -> pd.DataFrame:
+    def _match_stats(data: dict | None) -> pd.DataFrame:
         rows = []
         for period in (data or {}).get("statistics", []):
             seen = set()
@@ -638,7 +642,7 @@ class FootData:
         return pd.DataFrame(rows)
 
     @staticmethod
-    def _lineups(data, event) -> pd.DataFrame:
+    def _lineups(data: dict | None, event: dict) -> pd.DataFrame:
         rows = []
         for side, team in (("home", event["home"]), ("away", event["away"])):
             for p in (data or {}).get(side, {}).get("players", []):
@@ -703,7 +707,7 @@ class FootData:
         return pd.DataFrame(rows)
 
     @staticmethod
-    def _shots(data) -> pd.DataFrame:
+    def _shots(data: dict | None) -> pd.DataFrame:
         rows = []
         for s in (data or {}).get("shotmap", []):
             c = s.get("playerCoordinates") or {}
@@ -723,7 +727,7 @@ class FootData:
         return df
 
     @staticmethod
-    def _avg_positions(data) -> dict:
+    def _avg_positions(data: dict | None) -> dict:
         out = {}
         for side in ("home", "away"):
             rows = [{
@@ -735,7 +739,7 @@ class FootData:
         return out
 
     @staticmethod
-    def _incidents(data, event) -> pd.DataFrame:
+    def _incidents(data: dict | None, event: dict) -> pd.DataFrame:
         rows = []
         for i in (data or {}).get("incidents", []):
             kind = i.get("incidentType")
@@ -768,7 +772,7 @@ class FootData:
         return df
 
     # --- équipes -----------------------------------------------------------
-    def team_season_stats(self, ut: int, sid: int, teams: pd.DataFrame, progress=None) -> pd.DataFrame:
+    def team_season_stats(self, ut: int, sid: int, teams: pd.DataFrame, progress: Progress = None) -> pd.DataFrame:
         """teams : colonnes name, team_id. Une requête par équipe."""
         rows = []
         for i, t in enumerate(teams.itertuples(index=False)):
@@ -793,7 +797,7 @@ class FootData:
         return df
 
     # --- équipe : historique sur plusieurs saisons -------------------------------
-    def team_history(self, ut: int, team_id: int, n_seasons: int = 5, progress=None) -> pd.DataFrame:
+    def team_history(self, ut: int, team_id: int, n_seasons: int = 5, progress: Progress = None) -> pd.DataFrame:
         """Une ligne par saison (en cours + `n_seasons` précédentes) : rang, points et buts officiels (classement
         Sofascore, pénalités incluses) ; xG, xGA, xPts et PPDA d'Understat pour les 5 grands championnats, sinon
         grosses occasions, tirs concédés et PPDA approché des statistiques de saison Sofascore (1 requête/saison).
@@ -856,10 +860,10 @@ class FootData:
         if team is None or not team.get("history"):
             return False
 
-        def total(history, key):
+        def total(history: list[dict], key: str) -> float:
             return sum(float(h.get(key) or 0) for h in history)
 
-        def ppda(history):
+        def ppda(history: list[dict]) -> float:
             att = sum((h.get("ppda") or {}).get("att") or 0 for h in history)
             dfn = sum((h.get("ppda") or {}).get("def") or 0 for h in history)
             return att / dfn if dfn else np.nan
@@ -872,7 +876,7 @@ class FootData:
                     "Source": "Understat"})
         return True
 
-    def _sofascore_history(self, row: dict, ut: int, sid: int, past: bool, team_id: int):
+    def _sofascore_history(self, row: dict, ut: int, sid: int, past: bool, team_id: int) -> None:
         data = self.client.get(f"/team/{team_id}{_ut(ut, sid)}/statistics/overall", ttl=3 * HOUR,
                                permanent=past) or {}
         s = data.get("statistics") or {}
@@ -880,7 +884,7 @@ class FootData:
         if not s or not n:
             return
 
-        def per_match(key):
+        def per_match(key: str) -> float:
             return s[key] / n if isinstance(s.get(key), (int, float)) else np.nan
 
         actions = sum(s.get(k) or 0 for k in ("tackles", "interceptions", "fouls"))
@@ -891,7 +895,7 @@ class FootData:
                     "PPDA": passes / actions if passes and actions else np.nan, "Source": "Sofascore"})
 
     # --- équipe x match (classement xG, forme, pronostics) -------------------
-    def team_matches(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
+    def team_matches(self, ut: int, sid: int, progress: Progress = None) -> pd.DataFrame:
         """Une ligne par équipe et par match joué : buts, xG, xGA, points, xPts…
 
         Understat pour les 5 grands championnats (une requête, PPDA officiel),
@@ -955,7 +959,7 @@ class FootData:
                 })
         return pd.DataFrame(rows)
 
-    def _sofascore_team_matches(self, ut: int, sid: int, progress=None) -> pd.DataFrame:
+    def _sofascore_team_matches(self, ut: int, sid: int, progress: Progress = None) -> pd.DataFrame:
         rounds, _ = self.rounds(ut, sid)
         events = []
         for i, rnd in enumerate(rounds):
@@ -1030,14 +1034,14 @@ class FootData:
                     continue
                 player = p.get("player") or {}
                 xi.append({"side": side, "Joueur": player.get("name", ""), "N°": p.get("shirtNumber"),
-                           "Poste": POSITIONS.get(p.get("position") or player.get("position"), ""),
+                           "Poste": POSITIONS.get(p.get("position") or player.get("position") or "", ""),
                            "Note moy.": p.get("avgRating"), "player_id": player.get("id")})
             for m in block.get("missingPlayers") or []:
                 player = m.get("player") or {}
                 end = pd.to_datetime(m.get("expectedEndDate"), errors="coerce", utc=True)
                 detail = str(m.get("description") or "")
                 missing.append({"side": side, "Joueur": player.get("name", ""),
-                                "Poste": POSITIONS.get(player.get("position"), ""),
+                                "Poste": POSITIONS.get(player.get("position") or "", ""),
                                 "Motif": MISSING_REASONS.get(m.get("reason"), "Indisponible"),
                                 "Détail": INJURY_FR.get(detail, detail.replace("_", " ")),
                                 "Retour prévu": end.strftime("%d/%m/%Y") if pd.notna(end) else "",
@@ -1110,7 +1114,7 @@ class FootData:
         data = self.client.get(f"/event/{eid}/managers", ttl=24 * HOUR) or {}
         return {side: (data.get(f"{side}Manager") or {}).get("name", "") for side in ("home", "away")}
 
-    def prematch(self, event: dict, progress=None) -> dict:
+    def prematch(self, event: dict, progress: Progress = None) -> dict:
         """Tout l'avant-match d'un match à venir (event : ligne de upcoming_events) en 6 requêtes ; chaque partie
         tolère une ressource absente (404)."""
         eid = event["id"]
@@ -1140,7 +1144,7 @@ class FootData:
             num = partial(_as_float, p)
             positions = [x for x in str(p.get("position", "")).split() if x != "S"]
             pos = {"GK": "G", "D": "D", "M": "M", "F": "F"}.get(positions[0] if positions else "M", "M")
-            row = dict.fromkeys(PLAYER_METRICS, np.nan)
+            row: dict[str, Any] = dict.fromkeys(PLAYER_METRICS, np.nan)
             row.update({
                 "appearances": num("games"), "minutesPlayed": num("time"), "goals": num("goals"),
                 "expectedGoals": num("xG"), "assists": num("assists"), "expectedAssists": num("xA"),

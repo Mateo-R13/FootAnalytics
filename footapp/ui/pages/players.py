@@ -1,11 +1,14 @@
+from typing import cast
+
 import pandas as pd
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QSplitter
 
 from ...analysis import per90
 from ...config import ALL_PLAYER_METRICS, PLAYER_CATEGORIES, POSITIONS
 from .. import charts
-from ..widgets import Card, ChartWidget, DataTable, chart_card, icon, table_card, tool_button
+from ..widgets import Card, ChartWidget, DataTable, chart_card, icon, named, table_card, tool_button
 from . import Page
 
 
@@ -24,7 +27,7 @@ def metric_combo(metrics: dict, default: str) -> QComboBox:
     for k, (label, cat, _) in metrics.items():
         if cat != current_cat:
             box.addItem(f"── {cat} ──")
-            box.model().item(box.count() - 1).setEnabled(False)
+            cast(QStandardItemModel, box.model()).item(box.count() - 1).setEnabled(False)  # titre de catégorie
             current_cat = cat
         box.addItem(f"   {label}", k)
     box.setCurrentIndex(box.findData(default))
@@ -42,10 +45,10 @@ class PlayersPage(Page):
         super().__init__(state)
         export = tool_button("Exporter", "fa5s.file-export", "Exporter le tableau filtré (Excel / CSV)")
         export.clicked.connect(lambda: self.table.export(f"joueurs_{self.ctx.label}" if self.ctx else "joueurs"))
-        self.header.actions.addWidget(export)
+        self.header.action_bar.addWidget(export)
 
         self.search = QLineEdit(placeholderText="Rechercher un joueur…")
-        self.search.addAction(icon("fa5s.search", "#7d8396"), QLineEdit.LeadingPosition)
+        self.search.addAction(icon("fa5s.search", "#7d8396"), QLineEdit.ActionPosition.LeadingPosition)
         self.search.setMinimumWidth(220)
         self.position = combo(["Tous les postes", *POSITIONS.values()], [None, *POSITIONS])
         self.team = combo(["Toutes les équipes"], [None])
@@ -67,7 +70,7 @@ class PlayersPage(Page):
 
         self.metric_box = metric_combo(ALL_PLAYER_METRICS, "successfulDribbles")
         self.top_n = QSpinBox(minimum=5, maximum=40, value=15, prefix="Top ")
-        self.table = DataTable()
+        self.table: DataTable = DataTable()
         self.table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         state.images.loaded.connect(lambda *_: self.table.model_.refresh_icons())
         self.table.row_activated.connect(lambda r: state.open_player.emit(int(r["player_id"])))
@@ -80,12 +83,12 @@ class PlayersPage(Page):
         bar.addWidget(self.top_n)
         chart_box.body.insertLayout(0, bar)
 
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(table_card(self.table))
         splitter.addWidget(chart_box)
         splitter.setSizes([760, 480])
         self.body.addWidget(splitter, 1)
-        self.count_label = QLabel(objectName="Muted")
+        self.count_label = named(QLabel(), "Muted")
         self.body.addWidget(self.count_label)
 
         # recherche : recalcul 250 ms après la dernière frappe plutôt qu'à chaque touche

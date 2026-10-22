@@ -43,7 +43,18 @@ from ...config import (
 )
 from ...data import FootData
 from .. import charts, report, theme
-from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, icon, rounded_pixmap, table_card, tool_button
+from ..widgets import (
+    Card,
+    ChartWidget,
+    DataTable,
+    KpiTile,
+    chart_card,
+    icon,
+    named,
+    rounded_pixmap,
+    table_card,
+    tool_button,
+)
 from . import Page, scope_combo
 from .players import metric_combo
 
@@ -55,11 +66,13 @@ EVOLUTION_METRICS = {k: v for k, v in ALL_PLAYER_METRICS.items() if v[2] != "inf
 def player_combo() -> QComboBox:
     box = QComboBox()
     box.setEditable(True)
-    box.setInsertPolicy(QComboBox.NoInsert)
-    box.completer().setFilterMode(Qt.MatchContains)
-    box.completer().setCompletionMode(QCompleter.PopupCompletion)
+    box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    completer, edit = box.completer(), box.lineEdit()
+    assert completer is not None and edit is not None  # créés par setEditable(True)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
     box.setMinimumWidth(320)
-    box.lineEdit().setPlaceholderText("Rechercher un joueur…")
+    edit.setPlaceholderText("Rechercher un joueur…")
     return box
 
 
@@ -104,8 +117,8 @@ class ProfilePage(Page):
         self.follow_btn.clicked.connect(self._toggle_follow)
         pdf = tool_button("Exporter PDF", "fa5s.file-pdf", "Fiche complète en PDF (graphiques et statistiques)")
         pdf.clicked.connect(self.export_pdf)
-        self.header.actions.addWidget(self.follow_btn)
-        self.header.actions.addWidget(pdf)
+        self.header.action_bar.addWidget(self.follow_btn)
+        self.header.action_bar.addWidget(pdf)
         state.watchlist_changed.connect(self._update_follow)
 
         self.picker = player_combo()
@@ -125,25 +138,25 @@ class ProfilePage(Page):
         # colonne de gauche : identité + chiffres clés
         self.photo = QLabel()
         self.photo.setFixedSize(96, 96)
-        self.name = QLabel(objectName="PageTitle")
+        self.name = named(QLabel(), "PageTitle")
         self.name.setWordWrap(True)
         self.team_logo = QLabel()
-        self.team_name = QLabel(objectName="PageSubtitle")
+        self.team_name = named(QLabel(), "PageSubtitle")
         for label in (self.name, self.team_name):  # noms venus de l'API : jamais interprétés comme du HTML
-            label.setTextFormat(Qt.PlainText)
+            label.setTextFormat(Qt.TextFormat.PlainText)
         team_row = QHBoxLayout()
         team_row.addWidget(self.team_logo)
         team_row.addWidget(self.team_name, 1)
         self.facts = QGridLayout()
         self.facts.setVerticalSpacing(6)
         ident = Card(margins=16)
-        ident.body.addWidget(self.photo, 0, Qt.AlignHCenter)
-        ident.body.addWidget(self.name, 0, Qt.AlignHCenter)
+        ident.body.addWidget(self.photo, 0, Qt.AlignmentFlag.AlignHCenter)
+        ident.body.addWidget(self.name, 0, Qt.AlignmentFlag.AlignHCenter)
         ident.body.addLayout(team_row)
         # profil type : pastille (regroupement statistique, détail dans l'onglet « Profil type »)
         self.role_badge = QLabel()
-        self.role_badge.setTextFormat(Qt.PlainText)
-        self.role_badge.setAlignment(Qt.AlignCenter)
+        self.role_badge.setTextFormat(Qt.TextFormat.PlainText)
+        self.role_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.role_badge.setWordWrap(True)
         self.role_badge.setStyleSheet(f"background: {theme.rgba(self.accent, 0.16)}; color: {theme.INK}; "
                                       f"border: 1px solid {theme.rgba(self.accent, 0.45)}; border-radius: 11px; "
@@ -176,7 +189,7 @@ class ProfilePage(Page):
         self.form_chart = ChartWidget()
         self.matches_table = DataTable()
         self.all_table = DataTable()
-        form = QSplitter(Qt.Vertical)
+        form = QSplitter(Qt.Orientation.Vertical)
         form.addWidget(chart_card(self.form_chart))
         form.addWidget(table_card(self.matches_table))
         form.setSizes([380, 260])
@@ -190,7 +203,7 @@ class ProfilePage(Page):
         similar_card = table_card(self.similar_table, "Joueurs au profil le plus proche",
                                   "clic : radar · double-clic : fiche")
         similar_card.body.insertWidget(1, self.similar_scope)
-        similar = QSplitter(Qt.Horizontal)
+        similar = QSplitter(Qt.Orientation.Horizontal)
         similar.addWidget(similar_card)
         similar.addWidget(chart_card(self.similar_radar))
         similar.setSizes([560, 520])
@@ -213,7 +226,7 @@ class ProfilePage(Page):
         eb.addStretch()
         evo_card.body.insertLayout(0, eb)
         self.career_table_card = table_card(self.career_table, "Saison par saison", "toutes compétitions")
-        career = QSplitter(Qt.Vertical)
+        career = QSplitter(Qt.Orientation.Vertical)
         career.addWidget(evo_card)
         career.addWidget(self.career_table_card)
         career.setSizes([380, 260])
@@ -234,11 +247,11 @@ class ProfilePage(Page):
         self.shot_chart = ChartWidget()
         self.season_heat_chart = ChartWidget()
         self.shots_table = DataTable()
-        maps = QSplitter(Qt.Horizontal)
+        maps = QSplitter(Qt.Orientation.Horizontal)
         maps.addWidget(chart_card(self.shot_chart))
         maps.addWidget(chart_card(self.season_heat_chart))
         maps.setSizes([520, 560])
-        shots_split = QSplitter(Qt.Vertical)
+        shots_split = QSplitter(Qt.Orientation.Vertical)
         shots_split.addWidget(maps)
         shots_split.addWidget(table_card(self.shots_table, "Répartition des tirs",
                                          "par situation, surface de contact et zone"))
@@ -255,12 +268,12 @@ class ProfilePage(Page):
         # profil type : carte ACP du poste + explications (calcul partagé, en arrière-plan)
         self.role_chart = ChartWidget()
         self.role_text = QLabel()
-        self.role_text.setTextFormat(Qt.PlainText)  # noms de joueurs venus de l'API
+        self.role_text.setTextFormat(Qt.TextFormat.PlainText)  # noms de joueurs venus de l'API
         self.role_text.setWordWrap(True)
-        self.role_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.role_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         role_card = Card("Profil type", "regroupement statistique, pas un poste officiel")
         role_card.add(self.role_text, 1)
-        role_split = QSplitter(Qt.Horizontal)
+        role_split = QSplitter(Qt.Orientation.Horizontal)
         role_split.addWidget(chart_card(self.role_chart))
         role_split.addWidget(role_card)
         role_split.setSizes([680, 380])
@@ -568,7 +581,7 @@ class ProfilePage(Page):
         metric = self.evo_metric.currentData()
         if metric is None:
             return
-        label, _, kind = ALL_PLAYER_METRICS[metric]
+        label, _cat, kind = ALL_PLAYER_METRICS[metric]
         unit = " /90" if kind == "count" else ""
         kinds = ("league", "europe") if self.evo_europe.isChecked() else ("league",)
         threshold = self.evo_reliable.value()
@@ -703,7 +716,7 @@ class ProfilePage(Page):
         p = self._row()
         if p is None:
             return
-        kpis = [(tile.findChild(QLabel, "KpiLabel").text(), tile.value.text()) for tile in self.kpis.values()]
+        kpis = [(tile.label.text(), tile.value.text()) for tile in self.kpis.values()]
         photo = self.state.images.get("player", p.player_id)
         figures = [report.cover(p.player, f"{p.team} · {POSITIONS[p.pos]} · {self.ctx.label}", self._facts, kpis,
                                 report.pixmap_to_array(photo))]
@@ -727,7 +740,8 @@ class ProfilePage(Page):
                        ("Taille", f"{info['height']} cm" if info["height"] else "-"),
                        ("Pied fort", info["foot"]), ("Valeur estimée", info["value"]), ("Contrat", info["contract"])]
         while self.facts.count():
-            w = self.facts.takeAt(0).widget()
+            item = self.facts.takeAt(0)
+            w = item.widget() if item is not None else None
             if w:
                 w.deleteLater()
         facts = [("Poste", info["position"]), ("Âge", f"{info['age']} ans" if info["age"] else "-"),
@@ -735,10 +749,10 @@ class ProfilePage(Page):
                  ("Pied fort", info["foot"]), ("Numéro", str(info["shirt"] or "-")),
                  ("Valeur estimée", info["value"]), ("Contrat jusqu'à", info["contract"])]
         for i, (k, v) in enumerate(facts):
-            self.facts.addWidget(QLabel(k, objectName="Muted"), i, 0)
+            self.facts.addWidget(named(QLabel(k), "Muted"), i, 0)
             val = QLabel(v)
-            val.setTextFormat(Qt.PlainText)
-            val.setAlignment(Qt.AlignRight)
+            val.setTextFormat(Qt.TextFormat.PlainText)
+            val.setAlignment(Qt.AlignmentFlag.AlignRight)
             self.facts.addWidget(val, i, 1)
 
     def _on_matches(self, df, name):

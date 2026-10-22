@@ -20,6 +20,7 @@ class TeamsPage(Page):
 
     def __init__(self, state):
         super().__init__(state)
+        self._wanted_team: str | None = None  # équipe demandée (show_team) avant que la liste soit remplie
         self.df = pd.DataFrame()
         self._loaded_for = None
         self._history = {}           # (compétition, équipe) -> historique déjà calculé
@@ -27,7 +28,7 @@ class TeamsPage(Page):
 
         export = tool_button("Exporter", "fa5s.file-export")
         export.clicked.connect(lambda: self.table.export(f"equipes_{self.ctx.label}" if self.ctx else "equipes"))
-        self.header.actions.addWidget(export)
+        self.header.action_bar.addWidget(export)
 
         self.per_match = QCheckBox("Par match")
         self.per_match.setChecked(True)
@@ -46,7 +47,7 @@ class TeamsPage(Page):
         filters.body.addLayout(row)
         self.body.addWidget(filters)
 
-        self.table = DataTable()
+        self.table: DataTable = DataTable()
         self.table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         state.images.loaded.connect(lambda *_: self.table.model_.refresh_icons())
 
@@ -76,8 +77,8 @@ class TeamsPage(Page):
         self.form_chart = ChartWidget()
         form_card = chart_card(self.form_chart)
         fb = QHBoxLayout()
-        for w in (QLabel("Équipe"), self.form_team, self.form_window):
-            fb.addWidget(w)
+        for widget in (QLabel("Équipe"), self.form_team, self.form_window):
+            fb.addWidget(widget)
         fb.addStretch()
         form_card.body.insertLayout(0, fb)
         self.venue_table = DataTable()
@@ -96,7 +97,7 @@ class TeamsPage(Page):
             cb.addWidget(w)
         cb.addStretch()
         cmp_card.body.insertLayout(0, cb)
-        compare = QSplitter(Qt.Horizontal)
+        compare = QSplitter(Qt.Orientation.Horizontal)
         compare.addWidget(cmp_card)
         compare.addWidget(table_card(self.compare_table, "Détail", "valeurs par match et centiles"))
         compare.setSizes([680, 460])
@@ -115,8 +116,8 @@ class TeamsPage(Page):
             f"historique_{self.history_team.currentText()}"))
         hb.addWidget(history_export)
         history_chart_card.body.insertLayout(0, hb)
-        self.history_table = DataTable()
-        self.history_tab = QSplitter(Qt.Horizontal)
+        self.history_table: DataTable = DataTable()
+        self.history_tab = QSplitter(Qt.Orientation.Horizontal)
         self.history_tab.addWidget(history_chart_card)
         self.history_tab.addWidget(table_card(self.history_table, "Saison par saison",
                                               "classement officiel (pénalités incluses) · valeurs par match"))
@@ -132,7 +133,7 @@ class TeamsPage(Page):
         self.chart_tabs, self._match_tabs = tabs, (form_card, venue_card)
         tabs.currentChanged.connect(self._maybe_load_matches)
         tabs.currentChanged.connect(self._maybe_load_history)
-        splitter = QSplitter(Qt.Vertical)
+        splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(table_card(self.table))
         splitter.addWidget(tabs)
         splitter.setStretchFactor(0, 2)
@@ -209,7 +210,8 @@ class TeamsPage(Page):
         if len(keys) < 3:
             return self.compare_chart.message("Statistiques d'équipes insuffisantes pour un radar")
         params = [ALL_TEAM_METRICS[k][0] for k in keys]
-        series, table = [], {"Métrique": params}
+        series: list[tuple[str, list, list]] = []
+        table: dict[str, list] = {"Métrique": params}
         for name in dict.fromkeys((a, b)):
             i = df.index[df["team"] == name][0]
             # centile manquant : laissé vide (un 0 le ferait passer pour la pire équipe)
@@ -288,7 +290,7 @@ class TeamsPage(Page):
         self.history_table.set_dataframe(table.dropna(axis=1, how="all"))
 
     def _select_wanted_team(self):
-        name = getattr(self, "_wanted_team", None)
+        name = self._wanted_team
         if not name or self.form_team.count() == 0:
             return
         names = [self.form_team.itemText(i) for i in range(self.form_team.count())]

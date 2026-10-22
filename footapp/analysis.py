@@ -1,5 +1,7 @@
 """Calculs analytiques : normalisation par 90 minutes, centiles, modèles, profils types."""
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -35,7 +37,8 @@ def per90(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def percentiles(pool: pd.DataFrame, keys: list[str], lower_is_better=LOWER_IS_BETTER) -> pd.DataFrame:
+def percentiles(pool: pd.DataFrame, keys: list[str],
+                lower_is_better: Collection[str] = LOWER_IS_BETTER) -> pd.DataFrame:
     """Centile (0-100) de chaque ligne du `pool` pour chaque métrique (NaN si pas de donnée).
 
     `lower_is_better` : métriques où une valeur faible est meilleure (échelle inversée).
@@ -116,8 +119,8 @@ EVOLUTION_COLUMNS = ["Saison", "Compétition", "Équipe", "kind", "_start", "app
                      "reliable", "in_progress"]
 
 
-def season_evolution(rows: pd.DataFrame, metric: str, kinds=("league",), min_minutes: int = EVOLUTION_MIN_MINUTES,
-                     floor: int = EVOLUTION_FLOOR) -> pd.DataFrame:
+def season_evolution(rows: pd.DataFrame, metric: str, kinds: Collection[str] = ("league",),
+                     min_minutes: int = EVOLUTION_MIN_MINUTES, floor: int = EVOLUTION_FLOOR) -> pd.DataFrame:
     """Une ligne par (type de compétition, saison) : `value` = métrique par 90 min si cumulable, telle quelle sinon.
 
     Saisons sous `floor` minutes ignorées ; transfert en cours de saison : on garde la ligne où le joueur a le plus
@@ -211,7 +214,7 @@ def value_model(pool: pd.DataFrame, score: str, use_age: bool = True, min_n: int
 # ---------------------------------------------------------------------------
 # Tirs d'un joueur sur la saison (sortie de FootData.player_shots)
 # ---------------------------------------------------------------------------
-def _share(num, den) -> float:
+def _share(num: float, den: float) -> float:
     return num / den if den else np.nan
 
 
@@ -241,7 +244,7 @@ def shot_summary(shots: pd.DataFrame) -> dict:
     }
 
 
-def _shot_rows(category: str, groups) -> list[dict]:
+def _shot_rows(category: str, groups: Iterable[tuple[Any, pd.DataFrame]]) -> list[dict]:
     rows = []
     for value, d in groups:
         xg = _xg_sum(d["xg"])
@@ -319,7 +322,7 @@ def outcome_probabilities(lam_home: float, lam_away: float, rho: float = 0.0) ->
     return float(np.tril(m, -1).sum()), float(np.trace(m)), float(np.triu(m, 1).sum())
 
 
-def _outcomes(lam_h, lam_a, rho: float) -> np.ndarray:
+def _outcomes(lam_h: np.ndarray, lam_a: np.ndarray, rho: float) -> np.ndarray:
     """outcome_probabilities pour plusieurs matchs : tableau (n, 3)."""
     return np.array([outcome_probabilities(h, a, rho) for h, a in zip(lam_h, lam_a, strict=True)]).reshape(-1, 3)
 
@@ -337,7 +340,7 @@ def xg_table(tm: pd.DataFrame) -> pd.DataFrame:
     if tm.empty:
         return pd.DataFrame()
     g = tm.groupby("team")
-    def total(col):
+    def total(col: str) -> pd.Series:
         return g[col].sum(min_count=1)  # NaN (et non 0) si la donnée manque
 
     t = pd.DataFrame({
@@ -377,7 +380,8 @@ def _model_matches(tm: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return m, "xG et buts" if use_xg else "buts réels"
 
 
-def _fit(hi, ai, yh, ya, w, prior: np.ndarray, weight: float, theta=None, iters: int = 30) -> np.ndarray:
+def _fit(hi: np.ndarray, ai: np.ndarray, yh: np.ndarray, ya: np.ndarray, w: np.ndarray, prior: np.ndarray,
+         weight: float, theta: np.ndarray | None = None, iters: int = 30) -> np.ndarray:
     """Maximum de vraisemblance de Poisson pondéré, pénalisé vers l'a priori (Newton, quelques ms).
 
     θ = [niveau, avantage du terrain, attaque(n), défense(n)] :
@@ -419,7 +423,7 @@ def _prior_vector(teams: list, prior: dict | None, mean_goals: float) -> tuple[n
     return np.r_[prior["level"], prior["home"], att, dfn], PRIOR_WEIGHT
 
 
-def _weights(dates: pd.Series, at) -> np.ndarray:
+def _weights(dates: pd.Series, at: Any) -> np.ndarray:
     age = (pd.Timestamp(at) - dates).dt.days.to_numpy(dtype=float)
     return 0.5 ** (np.clip(age, 0, None) / HALF_LIFE)
 
@@ -430,12 +434,12 @@ def _index(m: pd.DataFrame) -> tuple[list, np.ndarray, np.ndarray]:
     return teams, m["home"].map(idx).to_numpy(), m["away"].map(idx).to_numpy()
 
 
-def _lambdas(th: np.ndarray, n: int, hi, ai) -> tuple[np.ndarray, np.ndarray]:
+def _lambdas(th: np.ndarray, n: int, hi: np.ndarray, ai: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return (np.exp(th[0] + th[1] + th[2 + hi] + th[2 + n + ai]),
             np.exp(th[0] + th[2 + ai] + th[2 + n + hi]))
 
 
-def team_strengths(tm: pd.DataFrame, prior: dict | None = None, at=None) -> tuple[pd.DataFrame, dict]:
+def team_strengths(tm: pd.DataFrame, prior: dict | None = None, at: Any = None) -> tuple[pd.DataFrame, dict]:
     """Forces offensive / défensive (1 = moyenne de la ligue) : maximum de vraisemblance de Poisson pondéré
     (demi-vie HALF_LIFE jours) sur un mélange xG / buts, ramené vers l'a priori (saison précédente si fournie,
     sinon la moyenne) d'autant plus que peu de matchs ont été joués. `at` : date de référence des poids."""
@@ -483,7 +487,8 @@ def predict_match(tm: pd.DataFrame, home: str, away: str, prior: dict | None = N
 OUTCOMES = ("1", "N", "2")
 
 
-def _legacy_lambdas(fh, fa, hi, ai, n: int, home, away, shrink: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
+def _legacy_lambdas(fh: np.ndarray, fa: np.ndarray, hi: np.ndarray, ai: np.ndarray, n: int, home: np.ndarray,
+                    away: np.ndarray, shrink: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
     """Ancien modèle (v2.4), gardé pour comparaison : moyennes de xG (ou de buts) de la saison ramenées vers la
     moyenne, moyennes domicile / extérieur de la ligue, Poisson indépendant. fh / fa : valeurs des matchs passés."""
     ok = ~(np.isnan(fh) | np.isnan(fa))
@@ -550,7 +555,7 @@ def backtest(tm: pd.DataFrame, min_matches: int = 3, prior: dict | None = None) 
     return pd.DataFrame(rows)
 
 
-def _calibration(bt: pd.DataFrame, columns) -> pd.DataFrame:
+def _calibration(bt: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     # (probabilité annoncée, l'issue s'est-elle produite ?) pour chacune des 3 issues de chaque match
     pairs = pd.concat([
         pd.DataFrame({"p": bt[col] / 100, "hit": bt["Résultat"] == outcome})
@@ -609,7 +614,7 @@ def team_radar(teams: pd.DataFrame) -> tuple[pd.DataFrame, list[str], pd.DataFra
     return df, keys, percentiles(df, keys, TEAM_LOWER_IS_BETTER)
 
 
-def rank_in(pool: pd.DataFrame, key: str, value) -> str:
+def rank_in(pool: pd.DataFrame, key: str, value: float) -> str:
     """Rang « 3e / 45 » d'une valeur dans le pool (sens selon la métrique)."""
     s = pool[key].dropna()
     if pd.isna(value) or s.empty:
@@ -624,7 +629,8 @@ KEY_ROLES = [("Note moy.", "rating"), ("Buts + passes déc.", "goalsAssistsSum")
 GOALKEEPER_ROLE = ("Gardien : buts évités", "goalsPrevented")
 
 
-def key_players(players: pd.DataFrame, team_id, min_minutes: int = 270, absent_ids=()) -> pd.DataFrame:
+def key_players(players: pd.DataFrame, team_id: int, min_minutes: int = 270,
+                absent_ids: Iterable[int] = ()) -> pd.DataFrame:
     """Meilleur joueur de l'équipe pour chaque rôle (note, buts + passes déc., npxG, passes clés, actions
     défensives ; buts évités pour les gardiens) parmi ceux ayant joué `min_minutes` : valeur de la saison, par
     90 min et centile parmi les joueurs du même poste de la compétition (même seuil de minutes)."""
@@ -657,14 +663,14 @@ def key_players(players: pd.DataFrame, team_id, min_minutes: int = 270, absent_i
 
 
 def absence_impact(missing: pd.DataFrame, players: pd.DataFrame, team_matches: int | None,
-                   key_ids=()) -> pd.DataFrame:
+                   key_ids: Iterable[int] = ()) -> pd.DataFrame:
     """Poids des absents : part des minutes de l'équipe jouées (minutes ÷ (J × 90), 0-100 %), buts + passes déc.,
     xG de la saison, et « Oui » si l'absent fait partie des joueurs clés."""
     out = missing.copy()
     keys = {int(k) for k in key_ids if pd.notna(k)}
     stats = players.set_index("player_id") if players is not None and not players.empty else pd.DataFrame()
 
-    def value(pid, col):
+    def value(pid: int, col: str) -> float:
         if stats.empty or pid not in stats.index or col not in stats:
             return np.nan
         v = stats.loc[pid, col]
@@ -689,7 +695,7 @@ def h2h_summary(h2h: pd.DataFrame) -> dict:
             "gf": int(h2h["gf"].sum()), "ga": int(h2h["ga"].sum())}
 
 
-def rest_days(last: pd.DataFrame, kickoff) -> dict:
+def rest_days(last: pd.DataFrame | None, kickoff: pd.Timestamp | None) -> dict:
     """Jours de repos avant le coup d'envoi (depuis le dernier match joué) et matchs joués sur les 14 derniers
     jours, toutes compétitions ; days=None si aucun match connu."""
     if last is None or last.empty or kickoff is None:
@@ -714,14 +720,16 @@ def kmeans(X: np.ndarray, k: int, seed: int = 0, n_init: int = 8, iters: int = 1
 
     Groupes renumérotés par taille décroissante (puis premier joueur) : résultat déterministe pour une graine."""
     rng = np.random.default_rng(seed)
-    best, best_inertia = None, np.inf
+    best: tuple[np.ndarray, np.ndarray] | None = None
+    best_inertia = np.inf
     for _ in range(n_init):
-        centers = [X[rng.integers(len(X))]]
+        seeds = [X[rng.integers(len(X))]]
         for _ in range(1, k):
-            d2 = ((X[:, None] - np.array(centers)[None]) ** 2).sum(-1).min(1)
+            d2 = ((X[:, None] - np.array(seeds)[None]) ** 2).sum(-1).min(1)
             p = d2 / d2.sum() if d2.sum() > 0 else None
-            centers.append(X[rng.choice(len(X), p=p)])
-        centers = np.array(centers)
+            seeds.append(X[rng.choice(len(X), p=p)])
+        centers = np.array(seeds)
+        labels = ((X[:, None] - centers[None]) ** 2).sum(-1).argmin(1)
         for _ in range(iters):
             labels = ((X[:, None] - centers[None]) ** 2).sum(-1).argmin(1)
             new = np.array([X[labels == j].mean(0) if (labels == j).any() else centers[j] for j in range(k)])
@@ -729,8 +737,10 @@ def kmeans(X: np.ndarray, k: int, seed: int = 0, n_init: int = 8, iters: int = 1
                 break
             centers = new
         inertia = float(((X - centers[labels]) ** 2).sum())
-        if inertia < best_inertia - 1e-9:
+        # `best is None` : inertie NaN (valeur manquante dans X), sinon `best` resterait vide
+        if best is None or inertia < best_inertia - 1e-9:
             best, best_inertia = (labels, centers), inertia
+    assert best is not None  # n_init ≥ 1
     labels, centers = best
     order = sorted(range(k), key=lambda j: (-(labels == j).sum(), np.argmax(labels == j)))
     remap = np.empty(k, int)
@@ -738,14 +748,14 @@ def kmeans(X: np.ndarray, k: int, seed: int = 0, n_init: int = 8, iters: int = 1
     return remap[labels], centers[order]
 
 
-def adjusted_rand(a, b) -> float:
+def adjusted_rand(a: np.ndarray, b: np.ndarray) -> float:
     """Indice de Rand ajusté entre deux partitions : 1 = identiques, ~0 = pas mieux que le hasard."""
     _, ia = np.unique(a, return_inverse=True)
     _, ib = np.unique(b, return_inverse=True)
     table = np.zeros((ia.max() + 1, ib.max() + 1))
     np.add.at(table, (ia, ib), 1)
 
-    def pairs(x):
+    def pairs(x: np.ndarray) -> float:
         return float((x * (x - 1) / 2).sum())
 
     n = len(ia)
@@ -856,7 +866,7 @@ class Roles:
     groups: dict
     min_minutes: int
 
-    def of(self, player_id) -> pd.Series | None:
+    def of(self, player_id: int) -> pd.Series | None:
         rows = self.table[self.table["player_id"] == player_id]
         return rows.iloc[0] if not rows.empty else None
 
@@ -939,7 +949,7 @@ def role_value(key: str, value: float) -> str:
 
 def role_axes(info: dict) -> tuple[str, str]:
     """Libellés des deux axes de la carte ACP : les deux métriques qui pèsent le plus de chaque côté de l'axe."""
-    def label(axis):
+    def label(axis: str) -> str:
         w = info["axes"].loc[axis].sort_values()
         low = ", ".join(_feature_name(k) for k in w.index[:2])
         return f"← {low}   ·   {', '.join(_feature_name(k) for k in w.index[::-1][:2])} →"

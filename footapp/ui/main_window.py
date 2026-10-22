@@ -1,3 +1,5 @@
+from typing import Any
+
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -20,6 +22,7 @@ from ..api.understat import UnderstatClient
 from ..config import APP_NAME, APP_VERSION, CACHE_DIR, COMPETITIONS, POSITIONS, resource_path
 from ..data import FootData
 from . import theme
+from .pages import Page
 from .pages.compare import ComparePage
 from .pages.dashboard import DashboardPage
 from .pages.help import HelpPage
@@ -35,10 +38,10 @@ from .pages.teams import TeamsPage
 from .pages.value import ValuePage
 from .palette import CommandPalette
 from .state import AppState, Context
-from .widgets import Banner, ImageStore, TaskRunner, icon, tool_button
+from .widgets import Banner, ImageStore, TaskRunner, icon, named, tool_button
 
 # Organisation de la navigation : (titre de section, [classes de pages])
-NAVIGATION = [
+NAVIGATION: list[tuple[str, list[type[Page]]]] = [
     ("COMPÉTITION", [DashboardPage, StandingsPage, MatchesPage, PredictionsPage, PrematchPage]),
     ("JOUEURS", [PlayersPage, ProfilePage, ComparePage, ScoutingPage, ValuePage, IndicesPage]),
     ("ÉQUIPES", [TeamsPage]),
@@ -76,11 +79,13 @@ class MainWindow(QMainWindow):
 
         # --- pages : construites à la première ouverture (voir page())
         self.stack = QStackedWidget()
-        self.pages, self.nav_buttons, self._page_classes = {}, {}, {}
+        self.pages: dict[str, Page] = {}
+        self.nav_buttons: dict[str, QPushButton] = {}
+        self._page_classes: dict[str, type[Page]] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
 
-        sidebar = QFrame(objectName="Sidebar")
+        sidebar = named(QFrame(), "Sidebar")
         sidebar.setFixedWidth(240)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(12, 16, 12, 12)
@@ -89,7 +94,7 @@ class MainWindow(QMainWindow):
         side.addSpacing(10)
         for section, page_classes in NAVIGATION:
             if section:
-                side.addWidget(QLabel(section, objectName="NavSection"))
+                side.addWidget(named(QLabel(section), "NavSection"))
             else:
                 side.addStretch()
             for cls in page_classes:
@@ -97,14 +102,14 @@ class MainWindow(QMainWindow):
                 btn = QPushButton(icon(cls.icon_name, theme.ACCENTS[cls.key]), f"  {NAV_LABELS[cls.key]}")
                 btn.setIconSize(QSize(17, 17))
                 btn.setCheckable(True)
-                btn.setCursor(Qt.PointingHandCursor)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setStyleSheet(theme.nav_button_style(theme.ACCENTS[cls.key]))
                 btn.clicked.connect(lambda _=False, k=cls.key: self.show_page(k))
                 group.addButton(btn)
                 side.addWidget(btn)
                 self.nav_buttons[cls.key] = btn
         side.addSpacing(8)
-        side.addWidget(QLabel("Données : Sofascore", objectName="SidebarFooter"))
+        side.addWidget(named(QLabel("Données : Sofascore"), "SidebarFooter"))
 
         # --- barre de contexte (compétition / saison)
         self.comp_logo = QLabel()
@@ -119,19 +124,19 @@ class MainWindow(QMainWindow):
                               "Vide le cache temporaire et recharge (les matchs terminés restent en cache)")
         refresh.setObjectName("Primary")
         refresh.setIcon(icon("fa5s.sync-alt", "#ffffff"))
-        self.context_label = QLabel(objectName="CompetitionName")
-        topbar = QFrame(objectName="TopBar")
+        self.context_label = named(QLabel(), "CompetitionName")
+        topbar = named(QFrame(), "TopBar")
         tb = self.topbar_layout = QHBoxLayout(topbar)
         tb.setContentsMargins(14, 8, 14, 8)
         tb.setSpacing(10)
         tb.addWidget(self.comp_logo)
         tb.addWidget(self.context_label)
         tb.addStretch()
-        for w in (QLabel("Compétition", objectName="Muted"), self.competition,
-                  QLabel("Saison", objectName="Muted"), self.season, refresh):
+        for w in (named(QLabel("Compétition"), "Muted"), self.competition,
+                  named(QLabel("Saison"), "Muted"), self.season, refresh):
             tb.addWidget(w)
 
-        content = QWidget(objectName="Content")
+        content = named(QWidget(), "Content")
         cl = QVBoxLayout(content)
         cl.setContentsMargins(20, 16, 20, 14)
         cl.setSpacing(16)
@@ -148,7 +153,8 @@ class MainWindow(QMainWindow):
         root.addWidget(content, 1)
         self.setCentralWidget(central)
 
-        self.busy = QProgressBar(maximumWidth=160, maximum=0)
+        self.busy = QProgressBar(maximum=0)
+        self.busy.setMaximumWidth(160)
         self.busy.setTextVisible(False)
         self.busy.hide()
         self.statusBar().addPermanentWidget(self.busy)
@@ -166,11 +172,11 @@ class MainWindow(QMainWindow):
         self.state.images.loaded.connect(self._refresh_comp_logo)
 
         # recherche globale
-        self.palette = CommandPalette(self, self._palette_entries, self._palette_choose)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.palette.popup)
-        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.palette.popup)
+        self.command_palette = CommandPalette(self, self._palette_entries, self._palette_choose)
+        QShortcut(QKeySequence("Ctrl+K"), self, self.command_palette.popup)
+        QShortcut(QKeySequence("Ctrl+F"), self, self.command_palette.popup)
         search = tool_button("Rechercher  Ctrl+K", "fa5s.search", "Recherche globale : joueurs, équipes, pages")
-        search.clicked.connect(self.palette.popup)
+        search.clicked.connect(self.command_palette.popup)
         self.topbar_layout.insertWidget(2, search)
 
         # nouvelle version publiée sur GitHub ?
@@ -192,14 +198,14 @@ class MainWindow(QMainWindow):
     def _brand(self):
         badge = QLabel()
         badge.setFixedSize(38, 38)
-        badge.setAlignment(Qt.AlignCenter)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #22c55e, stop:0.5 #3b82f6, "
                             "stop:1 #8b5cf6); border-radius: 11px;")
         badge.setPixmap(icon("fa5s.futbol", "#ffffff").pixmap(20, 20))
         names = QVBoxLayout()
         names.setSpacing(0)
-        names.addWidget(QLabel(APP_NAME, objectName="AppName"))
-        names.addWidget(QLabel(f"Football analytics · v{APP_VERSION}", objectName="AppVersion"))
+        names.addWidget(named(QLabel(APP_NAME), "AppName"))
+        names.addWidget(named(QLabel(f"Football analytics · v{APP_VERSION}"), "AppVersion"))
         row = QHBoxLayout()
         row.setContentsMargins(4, 0, 0, 0)
         row.setSpacing(10)
@@ -240,7 +246,8 @@ class MainWindow(QMainWindow):
         self.show_page("prematch")
 
     def _palette_entries(self):
-        entries = [("page", NAV_LABELS[k].replace("&&", "&"), "page", k) for k in self._page_classes]
+        entries: list[tuple[str, str, str, Any]] = [("page", NAV_LABELS[k].replace("&&", "&"), "page", k)
+                                                    for k in self._page_classes]
         if not self.state.standings.empty:
             entries += [("team", r["Équipe"], "équipe", r["Équipe"]) for _, r in self.state.standings.iterrows()]
         players = self.state.players

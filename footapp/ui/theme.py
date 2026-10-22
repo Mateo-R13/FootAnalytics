@@ -8,11 +8,13 @@ Deux familles de couleurs, à ne pas mélanger :
 Le mode est choisi au démarrage (configure) : les jetons ci-dessous sont des variables de module
 lues au moment du dessin, donc tout le code les utilise via `theme.NOM`.
 """
+from typing import Any
+
 import matplotlib as mpl
 from matplotlib.colors import LinearSegmentedColormap
 from PySide6.QtGui import QColor, QPalette
 
-MODES = {
+MODES: dict[str, dict[str, Any]] = {  # jetons (texte) et listes de couleurs
     "dark": {
         "BG": "#0f1117", "SIDEBAR": "#0a0c11", "SIDEBAR_TOP": "#11131c", "CARD": "#171a23", "CARD_HOVER": "#1c202b",
         "CONTROL": "#1e2230", "BORDER": "#2a2f3d", "BORDER_HOVER": "#3d4458", "INK": "#eef0f5", "INK2": "#b4b9c7",
@@ -117,17 +119,16 @@ def apply_matplotlib():
 def apply_qt(app):
     app.setStyle("Fusion")
     pal = QPalette()
+    r = QPalette.ColorRole
     roles = {
-        QPalette.Window: BG, QPalette.WindowText: INK, QPalette.Base: CARD,
-        QPalette.AlternateBase: ALT_ROW, QPalette.ToolTipBase: CONTROL, QPalette.ToolTipText: INK,
-        QPalette.Text: INK, QPalette.Button: CONTROL, QPalette.ButtonText: INK,
-        QPalette.Highlight: SELECTION, QPalette.HighlightedText: INK,
-        QPalette.PlaceholderText: MUTED, QPalette.Link: "#3b82f6",
+        r.Window: BG, r.WindowText: INK, r.Base: CARD, r.AlternateBase: ALT_ROW, r.ToolTipBase: CONTROL,
+        r.ToolTipText: INK, r.Text: INK, r.Button: CONTROL, r.ButtonText: INK, r.Highlight: SELECTION,
+        r.HighlightedText: INK, r.PlaceholderText: MUTED, r.Link: "#3b82f6",
     }
     for role, color in roles.items():
         pal.setColor(role, QColor(color))
-    pal.setColor(QPalette.Disabled, QPalette.Text, QColor(MUTED))
-    pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(MUTED))
+    pal.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(MUTED))
+    pal.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(MUTED))
     app.setPalette(pal)
     app.setStyleSheet(stylesheet())
 

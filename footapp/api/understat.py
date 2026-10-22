@@ -8,6 +8,7 @@ import hashlib
 import json
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -26,11 +27,11 @@ class UnderstatClient:
         self.cache_dir = Path(cache_dir) / "understat"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._session = requests.Session(impersonate="chrome")
+        self._session: requests.Session = requests.Session(impersonate="chrome")
         self._local = threading.local()
 
     @contextmanager
-    def cache_first(self):
+    def cache_first(self) -> Iterator[None]:
         """Même principe que SofascoreClient.cache_first : données en cache utilisées même expirées."""
         previous = getattr(self._local, "cache_first", False)
         self._local.cache_first = True

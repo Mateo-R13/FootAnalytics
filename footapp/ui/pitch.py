@@ -4,6 +4,7 @@ Remplace mplsoccer (et scipy, qu'il entraînait : ~66 Mo dans l'application inst
 seuls besoins de l'application : tracer un terrain et une heatmap lissée.
 """
 from functools import partial
+from typing import Any
 
 import numpy as np
 from matplotlib.patches import Arc, Circle, Ellipse, Rectangle
@@ -27,7 +28,7 @@ def _mirror(side: int, x: float) -> float:
 def draw_pitch(ax, line_color: str, pitch_color: str, linewidth: float = 1.0, line_zorder: float = 0.9):
     """Dessine un terrain horizontal (sens du jeu vers la droite) sur `ax`, aux bonnes proportions."""
     ax.set_facecolor(pitch_color)
-    style = {"fill": False, "edgecolor": line_color, "linewidth": linewidth, "zorder": line_zorder}
+    style: dict[str, Any] = {"fill": False, "edgecolor": line_color, "linewidth": linewidth, "zorder": line_zorder}
     rx, ry = CIRCLE_R / METERS_X, CIRCLE_R / METERS_Y
     ax.add_patch(Rectangle((0, 0), 100, 100, **style))
     ax.plot([50, 50], [0, 100], color=line_color, linewidth=linewidth, zorder=line_zorder)
@@ -79,7 +80,7 @@ def heatmap(ax, x, y, cmap, bins=(30, 20), sigma: float = 1.2, zorder: float = 0
 def draw_half_pitch(ax, line_color: str, pitch_color: str, linewidth: float = 1.0, line_zorder: float = 0.9):
     """Moitié offensive verticale, but en haut : abscisse = largeur (0-100), ordonnée = longueur (50-100)."""
     ax.set_facecolor(pitch_color)
-    style = {"fill": False, "edgecolor": line_color, "linewidth": linewidth, "zorder": line_zorder}
+    style: dict[str, Any] = {"fill": False, "edgecolor": line_color, "linewidth": linewidth, "zorder": line_zorder}
     rw, rl = CIRCLE_R / METERS_Y, CIRCLE_R / METERS_X  # rayons en unités de largeur / de longueur
     depth, y0, y1 = PENALTY_BOX
     depth6, s0, s1 = SIX_YARD_BOX

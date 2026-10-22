@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
+from types import TracebackType
 
 from .config import LOG_DIR
 
@@ -18,7 +19,7 @@ def setup_logging(level: int = logging.INFO) -> None:
         return
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(LOG_DIR / "footanalytics.log", maxBytes=1_000_000, backupCount=3,
+        handler: logging.Handler = RotatingFileHandler(LOG_DIR / "footanalytics.log", maxBytes=1_000_000, backupCount=3,
                                       encoding="utf-8")
     except OSError:
         handler = logging.StreamHandler()  # dossier inaccessible : journal sur la console
@@ -26,13 +27,13 @@ def setup_logging(level: int = logging.INFO) -> None:
     logger.addHandler(handler)
     logger.setLevel(level)
 
-    def log_uncaught(exc_type, exc, tb):
+    def log_uncaught(exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None) -> None:
         logger.critical("Erreur non gérée", exc_info=(exc_type, exc, tb))
         sys.__excepthook__(exc_type, exc, tb)
 
-    def log_thread(args):
+    def log_thread(args: threading.ExceptHookArgs) -> None:
         logger.critical("Erreur non gérée dans un fil d'exécution",
-                        exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+                        exc_info=args.exc_value)  # l'exception porte sa trace (__traceback__)
 
     sys.excepthook = log_uncaught
     threading.excepthook = log_thread

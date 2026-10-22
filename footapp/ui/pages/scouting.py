@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from ...analysis import per90, scout
 from ...config import ALL_PLAYER_METRICS, POSITIONS
-from ..widgets import Card, DataTable, icon, table_card, tool_button
+from ..widgets import Card, DataTable, icon, named, table_card, tool_button
 from . import Page, scope_combo
 from .players import metric_combo
 from .value import ProfileFilters, big5_hint, loading_hint, profile_columns
@@ -29,21 +29,21 @@ class CriterionRow(QWidget):
         super().__init__()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.metric = metric_combo(ALL_PLAYER_METRICS, key)
-        self.metric.setMinimumWidth(300)
+        self.metric_box = metric_combo(ALL_PLAYER_METRICS, key)
+        self.metric_box.setMinimumWidth(300)
         self.threshold = QSpinBox(minimum=0, maximum=99, value=int(threshold), prefix="≥ ", suffix="e centile")
         remove = QPushButton(icon("fa5s.times"), "")
         remove.setToolTip("Retirer ce critère")
         remove.setFixedWidth(34)
-        for w in (self.metric, self.threshold, remove):
+        for w in (self.metric_box, self.threshold, remove):
             lay.addWidget(w)
         lay.addStretch()
-        self.metric.currentIndexChanged.connect(on_change)
+        self.metric_box.currentIndexChanged.connect(on_change)
         self.threshold.valueChanged.connect(on_change)
         remove.clicked.connect(lambda: on_remove(self))
 
     def value(self):
-        return self.metric.currentData(), self.threshold.value()
+        return self.metric_box.currentData(), self.threshold.value()
 
 
 class ScoutingPage(Page):
@@ -59,7 +59,7 @@ class ScoutingPage(Page):
 
         export = tool_button("Exporter", "fa5s.file-export")
         export.clicked.connect(lambda: self.table.export("recherche"))
-        self.header.actions.addWidget(export)
+        self.header.action_bar.addWidget(export)
 
         self.scope = scope_combo()
         self.position = QComboBox()
@@ -85,8 +85,8 @@ class ScoutingPage(Page):
         for w in (QLabel("Référentiel"), self.scope, self.position, QLabel("Min."), self.min_minutes):
             row.addWidget(w)
         row.addStretch()
-        for w in (QLabel("Recherches"), self.saved, save, delete):
-            row.addWidget(w)
+        for widget in (QLabel("Recherches"), self.saved, save, delete):
+            row.addWidget(widget)
         top.body.addLayout(row)
         row = QHBoxLayout()
         row.addWidget(QLabel("Profil"))
@@ -106,14 +106,14 @@ class ScoutingPage(Page):
         crit.body.addWidget(add, 0)
         self.body.addWidget(crit)
 
-        self.table = DataTable()
+        self.table: DataTable = DataTable()
         self.table.model_.set_icon("Équipe", lambda r: state.logo("team", r.get("team_id")))
         self.table.row_activated.connect(lambda r: state.open_player.emit(int(r["player_id"])))
         state.images.loaded.connect(lambda *_: self.table.model_.refresh_icons())
         self.result_card = table_card(self.table, "Résultats", "score = centile moyen sur les critères · "
                                                                 "double-clic : fiche joueur")
         self.body.addWidget(self.result_card, 1)
-        self.status = QLabel(objectName="Muted")
+        self.status = named(QLabel(), "Muted")
         self.body.addWidget(self.status)
 
         for key, threshold in DEFAULT_CRITERIA:
@@ -293,7 +293,7 @@ class ScoutingPage(Page):
     def _delete(self):
         name = self.saved.currentData()
         question = f"Supprimer la recherche « {name} » ?"
-        if not name or QMessageBox.question(self, "Supprimer", question) != QMessageBox.Yes:
+        if not name or QMessageBox.question(self, "Supprimer", question) != QMessageBox.StandardButton.Yes:
             return
         searches = self._searches()
         searches.pop(name, None)

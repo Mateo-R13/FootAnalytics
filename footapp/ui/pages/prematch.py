@@ -18,7 +18,7 @@ from ...analysis import (
 )
 from ...config import ALL_TEAM_METRICS, PREMATCH_MIN_MATCHES
 from .. import charts, report, theme
-from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, tool_button
+from ..widgets import Card, ChartWidget, DataTable, KpiTile, chart_card, named, tool_button
 from . import Page
 
 DAYS = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
@@ -31,8 +31,8 @@ ESTIMATES = "estimations Sofascore, susceptibles de changer jusqu'au coup d'envo
 
 def _plain(text: str = "", name: str = "Muted") -> QLabel:
     """Libellé pouvant contenir des noms venus de l'API : toujours en texte brut, jamais interprété en HTML."""
-    label = QLabel(text, objectName=name)
-    label.setTextFormat(Qt.PlainText)
+    label = named(QLabel(text), name)
+    label.setTextFormat(Qt.TextFormat.PlainText)
     label.setWordWrap(True)
     return label
 
@@ -63,7 +63,7 @@ def compose(event: dict, bundle: dict | None, tm: pd.DataFrame | None, by_id: di
     c["pred"] = predict_match(tm, mh, ma, prior) if has_tm and mh and ma else None
 
     # échantillon : matchs de la compétition (lignes du modèle, sinon classement)
-    counts = tm.groupby("team").size() if has_tm else pd.Series(dtype=int)
+    counts = tm.groupby("team").size() if tm is not None and has_tm else pd.Series(dtype=int)
     st = standings if standings is not None and not standings.empty and "team_id" in standings else pd.DataFrame()
 
     def played(tid, model_name):
@@ -280,13 +280,13 @@ class PrematchPage(Page):
 
     def __init__(self, state):
         super().__init__(state)
-        self.upcoming, self.event, self.bundle, self.content = [], None, None, None
+        self.upcoming, self.match_event, self.bundle, self.content = [], None, None, None
         self.teams, self._teams_for, self.summary = None, None, None
         self._wanted = None  # match demandé (depuis Pronostics) avant que la liste soit chargée
 
         pdf = tool_button("Exporter PDF", "fa5s.file-pdf", "Rapport d'avant-match en PDF (environ 7 pages)")
         pdf.clicked.connect(self.export_pdf)
-        self.header.actions.addWidget(pdf)
+        self.header.action_bar.addWidget(pdf)
 
         self.match_box = QComboBox()
         self.match_box.setMinimumWidth(420)
@@ -328,7 +328,7 @@ class PrematchPage(Page):
                                       "rang xPts : classement « mérité » d'après les xG"), 1)
         rl.addWidget(self._table_card(self.venue_table, "Domicile / extérieur",
                                       "l'équipe qui reçoit à domicile, le visiteur à l'extérieur"), 1)
-        pred_tab = QSplitter(Qt.Horizontal)
+        pred_tab = QSplitter(Qt.Orientation.Horizontal)
         pred_tab.addWidget(chart_card(self.pred_chart))
         pred_tab.addWidget(right)
         pred_tab.setSizes([640, 560])
@@ -340,7 +340,7 @@ class PrematchPage(Page):
         self.rest_label = _plain()
         recent = self._table_card(self.recent_table, "Derniers matchs", "toutes compétitions, plus récents d'abord")
         recent.body.insertWidget(1, self.rest_label)
-        form_tab = QSplitter(Qt.Horizontal)
+        form_tab = QSplitter(Qt.Orientation.Horizontal)
         form_tab.addWidget(chart_card(self.form_chart))
         form_tab.addWidget(recent)
         form_tab.setSizes([680, 520])
@@ -350,7 +350,7 @@ class PrematchPage(Page):
 
         # onglet Joueurs clés
         self.key_tables, self.key_titles = {}, {}
-        keys_tab = QSplitter(Qt.Horizontal)
+        keys_tab = QSplitter(Qt.Orientation.Horizontal)
         for side in ("home", "away"):
             table = DataTable()
             table.model_.set_color("Statut", lambda v: theme.BAD_TEXT if v == "ABSENT" else None)
@@ -385,11 +385,11 @@ class PrematchPage(Page):
         self.xi_label = _plain()
         xi_card = self._table_card(self.xi_table, "Composition", "")
         xi_card.body.insertWidget(1, self.xi_label)
-        side_col = QSplitter(Qt.Vertical)
+        side_col = QSplitter(Qt.Orientation.Vertical)
         side_col.addWidget(absence_card)
         side_col.addWidget(xi_card)
         side_col.setSizes([420, 360])
-        h2h_tab = QSplitter(Qt.Horizontal)
+        h2h_tab = QSplitter(Qt.Orientation.Horizontal)
         h2h_tab.addWidget(h2h_card)
         h2h_tab.addWidget(side_col)
         h2h_tab.setSizes([600, 600])
@@ -418,7 +418,7 @@ class PrematchPage(Page):
 
     # --- chargement -------------------------------------------------------------------
     def _on_context(self, ctx):
-        self.upcoming, self.event, self.bundle, self.content = [], None, None, None
+        self.upcoming, self.match_event, self.bundle, self.content = [], None, None, None
         self.teams, self._teams_for, self.summary = None, None, None
         self.match_box.blockSignals(True)
         self.match_box.clear()
@@ -449,7 +449,7 @@ class PrematchPage(Page):
     def _on_upcoming(self, events, ctx):
         if ctx != self.ctx:
             return
-        current = self.event["id"] if self.event else None
+        current = self.match_event["id"] if self.match_event else None
         extra = [e for e in self.upcoming if e["id"] == self._wanted and all(x["id"] != e["id"] for x in events)]
         self._fill([*extra, *events])
         if self._wanted is None and current is not None:
@@ -474,8 +474,8 @@ class PrematchPage(Page):
         if idx < 0:
             return False
         self._wanted = None
-        if idx == self.match_box.currentIndex() and self.event is not None and \
-                self.event["id"] == self.match_box.itemData(idx):
+        if idx == self.match_box.currentIndex() and self.match_event is not None and \
+                self.match_event["id"] == self.match_box.itemData(idx):
             return True
         self.match_box.blockSignals(True)
         self.match_box.setCurrentIndex(idx)
@@ -488,7 +488,7 @@ class PrematchPage(Page):
         event = next((e for e in self.upcoming if e["id"] == eid), None)
         if event is None:
             return
-        self.event, self.bundle = event, None
+        self.match_event, self.bundle = event, None
         self._render()
         data = self.state.data
         self.state.runner.run("prematch", lambda progress: data.prematch(event, progress),
@@ -497,13 +497,13 @@ class PrematchPage(Page):
         self._load_teams()
 
     def _on_bundle(self, event, bundle):
-        if self.event is not None and event["id"] == self.event["id"]:
+        if self.match_event is not None and event["id"] == self.match_event["id"]:
             self.bundle = bundle
             self._render()
 
     def _on_bundle_error(self, event, message):
         self.state.runner.error.emit(message)  # bandeau ; le pronostic et la forme restent affichés
-        if self.event is not None and event["id"] == self.event["id"]:
+        if self.match_event is not None and event["id"] == self.match_event["id"]:
             self.bundle = {}
             self._render()
 
@@ -563,11 +563,11 @@ class PrematchPage(Page):
             label.setText("")
 
     def _render(self):
-        if self.event is None or self.ctx is None:
+        if self.match_event is None or self.ctx is None:
             return
         self._load_teams()
         _, by_id = self.state.model_team_names()
-        c = self.content = compose(self.event, self.bundle, self.state.team_matches, by_id, self.state.standings,
+        c = self.content = compose(self.match_event, self.bundle, self.state.team_matches, by_id, self.state.standings,
                                    self.state.players, self.teams, self.summary, self.state.team_prior)
         loading = self.bundle is None
         self.info.setText("\n".join(info_lines(c, self.ctx.competition)))

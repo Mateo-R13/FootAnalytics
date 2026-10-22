@@ -13,5 +13,5 @@ from ..config import APP_NAME
 def open_settings() -> QSettings:
     path = os.environ.get("FOOTAPP_SETTINGS")
     if path:
-        return QSettings(path, QSettings.IniFormat)
+        return QSettings(path, QSettings.Format.IniFormat)
     return QSettings(APP_NAME, APP_NAME)
